@@ -1,0 +1,5 @@
+# Keep source files out of reach
+/netlify/*     /  404!
+/supabase/*    /  404!
+/netlify.toml  /  404!
+/README.md     /  404!

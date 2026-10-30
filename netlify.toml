@@ -1,0 +1,6 @@
+# pack.spruceandsound.com — static app + one function (netlify/functions/api.mjs). No build step.
+[build]
+  publish = "."
+
+[functions]
+  node_bundler = "esbuild"
