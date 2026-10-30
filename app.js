@@ -172,8 +172,10 @@
         busy($("#go"), true, "Sending…"); $("#err").textContent = "";
         const { error } = await sb.auth.signInWithOtp({ email: em, options: { shouldCreateUser: true, emailRedirectTo: location.origin + "/" } });
         busy($("#go"), false);
-        if (error) { $("#err").textContent = error.message; return; }
+        // A slow mail server can time out here even though the email still goes out, so go to the code screen anyway.
+        if (error && !/timeout|timed out|504|deadline|fetch/i.test(`${error.status} ${error.message}`)) { $("#err").textContent = error.message; return; }
         renderSignIn("code", em);
+        if (error) $("#err").textContent = "Email is taking longer than usual. Check your inbox in a minute; if nothing arrives, go back and try again.";
       });
       $("#google").addEventListener("click", async () => {
         const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + "/" } });
