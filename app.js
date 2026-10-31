@@ -189,7 +189,13 @@
     const h = location.hash.replace(/^#\/?/, "");
     const [view, id, sub] = h.split("/");
     if (view === "join" && id) store.set(pendingJoinKey, id);
-    if (!session) return $(".auth #email, .auth #code") ? undefined : renderSignIn();
+    if (!session) {
+      if ($(".auth #email, .auth #code")) return;
+      if (view === "signin" || store.get(pendingJoinKey, null)) return renderSignIn();
+      return renderLanding();
+    }
+    if (view === "signin") history.replaceState(null, "", "#/");
+    document.title = "Pack";
     await loadMe().catch(() => {});
     if (store.get("activeDay", "") !== today() && navigator.onLine) {
       sb.rpc("touch_activity").then(({ error }) => { if (!error) store.set("activeDay", today()); });
@@ -227,7 +233,79 @@
     </div>${sub ? `<div class="sub">${sub}</div>` : ""}${progress != null ? `<div class="progress"><i style="width:${progress}%"></i></div>` : ""}<div id="netbar" class="netbar hidden" role="status"></div></header>`;
 
   // ───────────────────────── sign in ─────────────────────────
+  // ───────────────────────── landing (signed-out visitors) ─────────────────────────
+  function renderLanding() {
+    document.title = "Pack — packing lists that sort themselves";
+    const feat = (icon, t, d) => `<div class="lp-feat"><div class="lp-ic" aria-hidden="true">${icon}</div><h3>${t}</h3><p>${d}</p></div>`;
+    app.innerHTML = `<div class="lp">
+      <header class="lp-nav"><div class="lp-wrap lp-navrow">
+        <a class="lp-brand" href="#/"><img src="/apple-touch-icon.png" alt="" width="32" height="32">Pack</a>
+        <a class="lp-signin" href="#/signin">Sign in</a>
+      </div></header>
+
+      <section class="lp-hero"><div class="lp-wrap lp-herogrid">
+        <div class="lp-copy">
+          <p class="lp-eyebrow">Smart, shareable packing lists</p>
+          <h1>Dump it all in.<br><span>Pack sorts it out.</span></h1>
+          <p class="lp-lede">Type everything you're bringing, in any order and any format. Pack sorts it into categories and bags, checks the forecast for your dates, and keeps your gear ready for the next trip.</p>
+          <div class="lp-ctas"><a class="lp-btn" href="#/signin">Start packing. It's free</a><a class="lp-link" href="#/" id="howLink">See how it works ↓</a></div>
+          <p class="lp-fine">Works on iPhone, iPad and Android. Add it to your home screen like an app.</p>
+        </div>
+        <div class="lp-phone lp-tilt"><img src="/img/trip.webp" alt="A Big Sur weekend trip in Pack: the 4-day forecast, filters for clothes, gear and essentials, and smart suggestions like bug spray and a lens cloth" width="780" height="1333" fetchpriority="high"></div>
+      </div></section>
+
+      <section class="lp-section" id="how"><div class="lp-wrap">
+        <h2>Three steps, about a minute</h2>
+        <ol class="lp-steps">
+          <li><b>1</b><h3>Dump your list</h3><p>“passport, 3 tshirts, camera + 2 batteries, rain jacket…” Typos and all.</p></li>
+          <li><b>2</b><h3>Pack sorts it</h3><p>Categories, bags, clothes vs gear vs essentials, work vs personal, plus what you might forget for this weather.</p></li>
+          <li><b>3</b><h3>Check it off</h3><p>Tap as you pack, alone or with friends, even with no signal at the airport.</p></li>
+        </ol>
+      </div></section>
+
+      <section class="lp-section lp-alt"><div class="lp-wrap lp-show">
+        <div class="lp-phone"><img src="/img/bags.webp" alt="Items grouped by bag: daypack, duffel, camera bag, car, with check-offs from two people" width="780" height="1333" loading="lazy"></div>
+        <div><p class="lp-eyebrow">Bags</p><h2>Know exactly what goes where</h2>
+          <p>Add your daypack, duffel, camera bag or the car, and Pack assigns every item sensibly: documents and chargers in your carry-on, liquids checked. Move anything with one tap, or select a handful and move them together.</p></div>
+      </div></section>
+
+      <section class="lp-section"><div class="lp-wrap lp-show lp-flip">
+        <div class="lp-phone"><img src="/img/inventory.webp" alt="The Inventory screen showing camera equipment, with items marked Always" width="780" height="1333" loading="lazy"></div>
+        <div><p class="lp-eyebrow">Inventory</p><h2>Your gear, remembered</h2>
+          <p>Keep personal items and work equipment in one place. Mark the things you never travel without as <b>Always</b>, and they're on every new trip automatically. Heading to a shoot? “Bring my equipment” adds your whole kit in one tap.</p></div>
+      </div></section>
+
+      <section class="lp-section lp-alt"><div class="lp-wrap">
+        <h2>Everything a trip needs</h2>
+        <div class="lp-feats">
+          ${feat("☀️", "Weather-smart", "Forecast for your dates, or typical weather if you're planning far ahead, with suggestions to match.")}
+          ${feat("👥", "Pack together", "Share a trip with one link. Check-offs show up live on everyone's phone.")}
+          ${feat("🙋", "Who's bringing what", "Assign items to people (“Sam's got the tent”) and see just your own list.")}
+          ${feat("💸", "Split the costs", "Log who paid for coffee, dinner or gas. Pack keeps a running tally of who owes whom, and you mark it paid back.")}
+          ${feat("⏰", "Pack last", "Things you use until you leave, like your charger or toothbrush, wait in their own last-minute list.")}
+          ${feat("📬", "Day-before reminder", "An email the day before you leave with what's left to pack and what to grab last.")}
+          ${feat("🧳", "Bags", "Group by carry-on, checked bag, camera bag. Move items with a tap.")}
+          ${feat("👕", "Clothes, gear, essentials", "Filter in a tap, and split work kit from personal stuff.")}
+          ${feat("🎒", "Inventory & equipment", "Keep your gear in one place and bring your whole work kit to a trip in one tap.")}
+          ${feat("📴", "Works offline", "Check things off with no signal. Everything syncs when you're back.")}
+          ${feat("🔁", "Templates", "Save a trip you take often and start the next one from it.")}
+          ${feat("📊", "Your packing stats", "Trips planned, days away, and the things that come with you every time.")}
+        </div>
+      </div></section>
+
+      <section class="lp-final"><div class="lp-wrap">
+        <h2>Your next trip, sorted.</h2>
+        <p>Free to use. Sign in with your email or Google; no password to remember.</p>
+        <a class="lp-btn" href="#/signin">Start packing</a>
+      </div></section>
+
+      <footer class="lp-foot"><div class="lp-wrap">Made by <a href="https://spruceandsound.com">Spruce &amp; Sound</a> · © ${new Date().getFullYear()}</div></footer>
+    </div>`;
+    $("#howLink").addEventListener("click", (e) => { e.preventDefault(); $("#how").scrollIntoView({ behavior: "smooth" }); });
+  }
+
   function renderSignIn(step = "email", email = store.get("lastEmail", "")) {
+    document.title = "Pack";
     const invite = store.get(pendingJoinKey, null);
     if (step === "email") {
       app.innerHTML = `<section class="auth"><form id="f">
@@ -240,6 +318,7 @@
         <button class="google" id="google" type="button">${ICON.google}Continue with Google</button>
         <div class="err" id="err" role="alert"></div>
         <div class="fine">New here? Same steps — your account is created automatically.</div>
+        ${invite ? "" : `<a class="link" href="#/" style="display:inline-block">← What is Pack?</a>`}
       </form></section>`;
       $("#f").addEventListener("submit", async (e) => {
         e.preventDefault();
