@@ -372,7 +372,7 @@
     }
     const have = new Set(existing.map((i) => key(i.name)));
     const rows = res.items.filter((i) => !have.has(key(i.name)) && (have.add(key(i.name)), true))
-      .map((i, n) => ({ trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", position: existing.length + n }));
+      .map((i, n) => ({ trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: i.purpose || "personal", position: existing.length + n }));
     if (rows.length) must(await sb.from("items").insert(rows));
     const allNames = new Set([...have, ...rows.map((r) => key(r.name))]);
     const prev = Array.isArray(trip.suggestions) ? trip.suggestions : [];
@@ -383,7 +383,11 @@
   }
 
   // ───────────────────────── one trip ─────────────────────────
-  const view = { group: store.get("group", "category"), hide: false };
+  const view = { group: store.get("group", "category"), hide: false, kind: "all", purpose: store.get("purpose", "all"), select: false, picked: new Set() };
+  const KINDS = [["clothes", "Clothes"], ["gear", "Gear"], ["essentials", "Essentials"]];
+  const kindOf = (i) => i.kind || "gear";
+  const purposeOf = (i) => i.purpose || "personal";
+  const bagOf = (i) => T.trip.bags.find((b) => key(b) === key(i.bag)) || "";
   let T = null; // current trip state: { trip, items, members, profiles }
 
   async function fetchTrip(id) {
@@ -427,19 +431,24 @@
     const { trip, items } = T;
     const p = items.filter((i) => i.packed).length, n = items.length;
     const shared = T.members.length > 1;
-    const byBag = view.group === "bag" && trip.bags.length;
+    const byBag = view.group === "bag";
     const scrollY = window.scrollY;
+    const hasWork = items.some((i) => purposeOf(i) === "work");
+    const inPurpose = items.filter((i) => view.purpose === "all" || purposeOf(i) === view.purpose);
+    const shown = inPurpose.filter((i) => view.kind === "all" || kindOf(i) === view.kind);
 
+    const groupOf = (i) => byBag ? bagOf(i) : i.category || "Other";
     const groups = new Map();
     const order = byBag ? [...trip.bags, ""] : [];
-    for (const i of items) {
-      if (view.hide && i.packed) continue;
-      const g = byBag ? (trip.bags.find((b) => key(b) === key(i.bag)) || "") : i.category || "Other";
+    for (const i of shown) {
+      if (view.hide && i.packed && !view.select) continue;
+      const g = groupOf(i);
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g).push(i);
     }
     const names = byBag ? order.filter((g) => groups.has(g)) : [...groups.keys()];
-    const counts = (g) => { const all = items.filter((i) => byBag ? (trip.bags.find((b) => key(b) === key(i.bag)) || "") === g : (i.category || "Other") === g); return `${all.filter((i) => i.packed).length}/${all.length}`; };
+    const counts = (g) => { const all = shown.filter((i) => groupOf(i) === g); return `${all.filter((i) => i.packed).length}/${all.length}`; };
+    const kindCount = (k) => inPurpose.filter((i) => k === "all" || kindOf(i) === k).length;
 
     const wx = trip.weather;
     const wxHtml = wx && Array.isArray(wx.days) && wx.days.length ? `<section class="card wx">
@@ -463,30 +472,69 @@
         <span class="grow muted" style="font-size:14px">${shared ? `Packing with ${T.members.length - 1} other${T.members.length > 2 ? "s" : ""}` : "Just you"}</span>
         <button class="pill" id="shareBtn">Share</button>
       </div>
-      <div class="toolbar">
-        ${trip.bags.length ? `<div class="seg" role="group" aria-label="Group by"><button class="${!byBag ? "on" : ""}" data-group="category">Category</button><button class="${byBag ? "on" : ""}" data-group="bag">Bag</button></div>` : ""}
-        <button class="pill ${view.hide ? "on" : ""}" id="hideBtn">Hide packed</button>
+      <div class="filters" role="group" aria-label="Show">
+        ${[["all", "All"], ...KINDS].map(([k, label]) => `<button class="${view.kind === k ? "on" : ""}" data-kind="${k}">${label} <small>${kindCount(k)}</small></button>`).join("")}
       </div>
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="Work or personal">${[["all", "Both"], ["personal", "Personal"], ["work", "Work"]].map(([k, l]) => `<button class="${view.purpose === k ? "on" : ""}" data-purpose="${k}">${l}</button>`).join("")}</div>
+        <div class="seg" role="group" aria-label="Group by"><button class="${!byBag ? "on" : ""}" data-group="category">Category</button><button class="${byBag ? "on" : ""}" data-group="bag">Bag</button></div>
+      </div>
+      <div class="toolbar">
+        <button class="pill ${view.hide ? "on" : ""}" id="hideBtn">Hide packed</button><span class="spacer"></span>
+        <button class="pill ${view.select ? "on" : ""}" id="selBtn">${view.select ? "Done" : "Select"}</button>
+      </div>
+      ${byBag && !trip.bags.length ? `<button class="card hintcard" id="addBagHint">No bags on this trip yet. <strong>Add bags →</strong></button>` : ""}
+      ${view.purpose === "work" && !hasWork ? `<p class="hint" style="margin:0 4px 14px">Nothing is marked as work yet. Tap Select, choose items, then “Work / Personal”.</p>` : ""}
       ${sugg.length ? `<div class="sugg"><p>You might also want:</p><div class="chips">${sugg.map((s, i) => `<button class="chip dash" data-sug="${i}"><span>+ ${esc(s.name)}</span>${s.why ? `<small>${esc(s.why)}</small>` : ""}</button>`).join("")}</div></div>` : ""}
-      <div id="groups">${names.map((g) => `<section class="card cat"><h2>${esc(g || (byBag ? "No bag yet" : "Other"))} <span>${counts(g)}</span></h2>
-        ${groups.get(g).map((i) => `<div class="item${i.packed ? " on" : ""}" data-id="${i.id}">
-          <button class="tick" data-tick="${i.id}" role="checkbox" aria-checked="${i.packed}" aria-label="${esc(i.name)}"><span class="box">${ICON.check}</span></button>
-          <button class="body" data-edit="${i.id}"><span class="grow"><span class="nm">${esc(i.name)}</span>${i.note ? `<span class="note">${esc(i.note)}</span>` : ""}</span>
+      <div id="groups" class="${view.select ? "selecting" : ""}">${names.map((g) => `<section class="card cat"><h2>${esc(g || (byBag ? "No bag yet" : "Other"))} <span>${counts(g)}</span></h2>
+        ${groups.get(g).map((i) => `<div class="item${i.packed ? " on" : ""}${view.picked.has(i.id) ? " picked" : ""}" data-id="${i.id}">
+          ${view.select
+            ? `<button class="tick" data-pick="${i.id}" role="checkbox" aria-checked="${view.picked.has(i.id)}" aria-label="Select ${esc(i.name)}"><span class="box round">${ICON.check}</span></button>`
+            : `<button class="tick" data-tick="${i.id}" role="checkbox" aria-checked="${i.packed}" aria-label="${esc(i.name)}"><span class="box">${ICON.check}</span></button>`}
+          <button class="body" data-${view.select ? "pick" : "edit"}="${i.id}"><span class="grow"><span class="nm">${esc(i.name)}</span>${i.note ? `<span class="note">${esc(i.note)}</span>` : ""}</span>
             ${i.qty ? `<span class="qty">${esc(i.qty)}</span>` : ""}
-            ${!byBag && i.bag ? `<span class="bagtag">${esc(i.bag)}</span>` : ""}
-            ${byBag ? `<span class="bagtag">${esc(i.category)}</span>` : ""}
+            ${purposeOf(i) === "work" && view.purpose !== "work" ? `<span class="worktag">Work</span>` : ""}
+            ${byBag ? `<span class="cattag">${esc(i.category)}</span>` : ""}
             ${shared && i.packed && i.packed_by && i.packed_by !== session.user.id ? avatar(profileOf(i.packed_by), "by") : ""}
-          </button></div>`).join("")}</section>`).join("") ||
-        `<div class="empty"><strong>${n ? "All packed 🎉" : "Nothing here yet"}</strong>${n ? "Turn off “Hide packed” to see everything." : "Type or paste items below and Pack will sort them."}</div>`}</div>
+          </button>
+          ${!byBag && !view.select ? `<button class="bagtag${i.bag ? "" : " empty"}" data-bag="${i.id}" aria-label="Bag for ${esc(i.name)}">${i.bag ? esc(i.bag) : "+ Bag"}</button>` : ""}
+        </div>`).join("")}</section>`).join("") ||
+        `<div class="empty"><strong>${n && !shown.length ? "Nothing matches" : n ? "All packed 🎉" : "Nothing here yet"}</strong>${n && !shown.length ? "Try a different filter." : n ? "Turn off “Hide packed” to see everything." : "Type or paste items below and Pack will sort them."}</div>`}</div>
     </main>
-    <div class="add"><form id="addForm"><input class="t" id="addInput" placeholder="Add items… (any format)" autocomplete="off" enterkeyhint="send"><button type="submit" id="addBtn">Add</button></form></div>`;
+    ${view.select
+      ? `<div class="add selbar"><div class="selrow"><span class="muted" style="font-size:14px">${view.picked.size ? `${view.picked.size} selected` : "Tap items to select"}</span>
+          <button class="pill" id="selAll">${view.picked.size === shown.length && shown.length ? "None" : "All"}</button></div>
+        <div class="selrow">
+          <button class="selact" data-act="bag" ${view.picked.size ? "" : "disabled"}>Move to bag</button>
+          <button class="selact" data-act="kind" ${view.picked.size ? "" : "disabled"}>Type</button>
+          <button class="selact" data-act="purpose" ${view.picked.size ? "" : "disabled"}>Work / Personal</button>
+        </div></div>`
+      : `<div class="add"><form id="addForm"><input class="t" id="addInput" placeholder="Add items… (any format)" autocomplete="off" enterkeyhint="send"><button type="submit" id="addBtn">Add</button></form></div>`}`;
     window.scrollTo(0, scrollY);
 
     $$("[data-group]").forEach((b) => b.addEventListener("click", () => { view.group = b.dataset.group; store.set("group", view.group); drawTrip(); }));
+    $$("[data-kind]").forEach((b) => b.addEventListener("click", () => { view.kind = b.dataset.kind; drawTrip(); }));
+    $$("[data-purpose]").forEach((b) => b.addEventListener("click", () => { view.purpose = b.dataset.purpose; store.set("purpose", view.purpose); drawTrip(); }));
     $("#hideBtn").addEventListener("click", () => { view.hide = !view.hide; drawTrip(); });
+    $("#selBtn").addEventListener("click", () => { view.select = !view.select; view.picked.clear(); drawTrip(); });
+    $("#addBagHint")?.addEventListener("click", () => newBag().then((b) => b && drawTrip()));
+    $("#selAll")?.addEventListener("click", () => {
+      if (view.picked.size === shown.length) view.picked.clear(); else shown.forEach((i) => view.picked.add(i.id));
+      drawTrip();
+    });
+    $$(".selact").forEach((b) => b.addEventListener("click", () => {
+      const ids = [...view.picked];
+      if (b.dataset.act === "bag") pickBag(ids);
+      if (b.dataset.act === "kind") pickKind(ids);
+      if (b.dataset.act === "purpose") pickPurpose(ids);
+    }));
     $("#shareBtn").addEventListener("click", shareTrip);
     $("#moreBtn").addEventListener("click", () => tripMenu(ownerId === session.user.id));
     $("#groups").addEventListener("click", async (e) => {
+      const pk = e.target.closest("[data-pick]");
+      if (pk) { const id = pk.dataset.pick; view.picked.has(id) ? view.picked.delete(id) : view.picked.add(id); drawTrip(); return; }
+      const bg = e.target.closest("[data-bag]");
+      if (bg) return pickBag([bg.dataset.bag]);
       const t = e.target.closest("[data-tick]");
       if (t) {
         const it = T.items.find((x) => x.id === t.dataset.tick); if (!it) return;
@@ -506,10 +554,56 @@
       trip.suggestions = sugg.filter((_, i) => i !== +b.dataset.sug); drawTrip();
       await addText(s.name);
     });
-    $("#addForm").addEventListener("submit", async (e) => {
+    $("#addForm")?.addEventListener("submit", async (e) => {
       e.preventDefault(); const v = $("#addInput").value.trim(); if (!v) return;
       if (await addText(v)) $("#addInput").value = "";
     });
+  }
+
+  // Change several items at once (bag, type, work/personal)
+  async function patchItems(ids, patch, label) {
+    const set = new Set(ids);
+    const before = T.items.filter((i) => set.has(i.id)).map((i) => ({ ...i }));
+    T.items.forEach((i) => { if (set.has(i.id)) Object.assign(i, patch); });
+    view.picked.clear(); view.select = false; drawTrip();
+    const { error } = await sb.from("items").update(patch).in("id", ids);
+    if (error) { before.forEach((b) => Object.assign(T.items.find((i) => i.id === b.id) || {}, b)); drawTrip(); return fail(error); }
+    store.set("trip." + T.trip.id, T);
+    if (ids.length > 1) toast(`${ids.length} items ${label}`);
+  }
+  async function newBag() {
+    if (T.trip.bags.length >= 12) { toast("A trip can have up to 12 bags."); return null; }
+    const name = (prompt("Name the bag", BAG_PRESETS.find((b) => !T.trip.bags.some((x) => key(x) === key(b))) || "") || "").trim().slice(0, 40);
+    if (!name) return null;
+    if (T.trip.bags.some((b) => key(b) === key(name))) return T.trip.bags.find((b) => key(b) === key(name));
+    const bags = [...T.trip.bags, name];
+    const { error } = await sb.from("trips").update({ bags }).eq("id", T.trip.id);
+    if (error) { fail(error); return null; }
+    T.trip.bags = bags; return name;
+  }
+  function choice(title, options, current, onPick) {
+    openSheet(`<h2>${esc(title)}</h2><div class="menu">${options.map(([v, l], n) =>
+      `<button data-v="${n}"${v === current ? ' class="cur"' : ""}>${esc(l)}${v === current ? " ✓" : ""}</button>`).join("")}
+      <hr><button data-v="x" style="font-weight:650">Cancel</button></div>`, (e) => {
+      const b = e.target.closest("[data-v]"); if (!b) return;
+      closeSheet(); if (b.dataset.v !== "x") onPick(options[+b.dataset.v][0]);
+    });
+  }
+  function pickBag(ids) {
+    const one = ids.length === 1 ? T.items.find((i) => i.id === ids[0]) : null;
+    choice(one ? `Bag for ${one.name}` : `Move ${ids.length} items to…`,
+      [...T.trip.bags.map((b) => [b, b]), ["", "No bag"], ["__new", "+ New bag…"]], one ? bagOf(one) : null, async (v) => {
+        if (v === "__new") { v = await newBag(); if (v == null) return drawTrip(); }
+        patchItems(ids, { bag: v }, v ? `moved to ${v}` : "taken out of bags");
+      });
+  }
+  function pickKind(ids) {
+    const one = ids.length === 1 ? T.items.find((i) => i.id === ids[0]) : null;
+    choice(`Type for ${one ? one.name : ids.length + " items"}`, KINDS, one ? kindOf(one) : null, (v) => patchItems(ids, { kind: v }, `set to ${v}`));
+  }
+  function pickPurpose(ids) {
+    const one = ids.length === 1 ? T.items.find((i) => i.id === ids[0]) : null;
+    choice(`${one ? one.name : ids.length + " items"}: work or personal?`, [["personal", "Personal"], ["work", "Work"]], one ? purposeOf(one) : null, (v) => patchItems(ids, { purpose: v }, `marked ${v}`));
   }
 
   async function addText(text) {
@@ -528,14 +622,27 @@
       <label class="f" for="en">Item</label><input class="t" id="en" value="${esc(it.name)}" required maxlength="200">
       <div class="row2"><div><label class="f" for="eq">Qty</label><input class="t" id="eq" value="${esc(it.qty)}" maxlength="40"></div>
       <div><label class="f" for="ec">Category</label><input class="t" id="ec" value="${esc(it.category)}" list="cats" maxlength="40"><datalist id="cats">${cats.map((c) => `<option value="${esc(c)}">`).join("")}</datalist></div></div>
-      ${T.trip.bags.length ? `<label class="f" for="eb">Bag</label><select class="t" id="eb"><option value="">No bag</option>${T.trip.bags.map((b) => `<option${key(b) === key(it.bag) ? " selected" : ""}>${esc(b)}</option>`).join("")}</select>` : ""}
+      <label class="f">Type</label><div class="seg wide" id="ek">${KINDS.map(([k, l]) => `<button type="button" data-k="${k}" class="${kindOf(it) === k ? "on" : ""}">${l}</button>`).join("")}</div>
+      <label class="f">For</label><div class="seg wide" id="ep">${[["personal", "Personal"], ["work", "Work"]].map(([k, l]) => `<button type="button" data-k="${k}" class="${purposeOf(it) === k ? "on" : ""}">${l}</button>`).join("")}</div>
+      <label class="f" for="eb">Bag</label><select class="t" id="eb"><option value="">No bag</option>${T.trip.bags.map((b) => `<option${key(b) === key(it.bag) ? " selected" : ""}>${esc(b)}</option>`).join("")}<option value="__new">+ New bag…</option></select>
       <label class="f" for="eo">Note</label><input class="t" id="eo" value="${esc(it.note)}" maxlength="200">
       <button class="primary" type="submit">Save</button>
       <button class="secondary" type="button" id="toCloset">Save to my closet</button>
       <button class="danger-btn" type="button" id="del">Remove from list</button></form>`);
+    for (const id of ["#ek", "#ep"]) $(id).addEventListener("click", (e) => {
+      const b = e.target.closest("[data-k]"); if (!b) return;
+      $$("button", $(id)).forEach((x) => x.classList.toggle("on", x === b));
+    });
+    $("#eb").addEventListener("change", async (e) => {
+      if (e.target.value !== "__new") return;
+      const name = await newBag();
+      if (name) { const o = document.createElement("option"); o.textContent = name; e.target.insertBefore(o, e.target.lastElementChild); e.target.value = name; }
+      else e.target.value = it.bag || "";
+    });
     $("#ef").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const patch = { name: $("#en").value.trim(), qty: $("#eq").value.trim(), category: $("#ec").value.trim() || "Other", note: $("#eo").value.trim(), bag: $("#eb")?.value ?? it.bag };
+      const patch = { name: $("#en").value.trim(), qty: $("#eq").value.trim(), category: $("#ec").value.trim() || "Other", note: $("#eo").value.trim(),
+        bag: $("#eb").value === "__new" ? it.bag : $("#eb").value, kind: $("#ek .on")?.dataset.k || kindOf(it), purpose: $("#ep .on")?.dataset.k || purposeOf(it) };
       closeSheet(); Object.assign(it, patch); drawTrip();
       const { error } = await sb.from("items").update(patch).eq("id", it.id); if (error) fail(error);
     });
@@ -545,7 +652,7 @@
     });
     $("#toCloset").addEventListener("click", async () => {
       closeSheet();
-      const { error } = await sb.from("closet_items").insert({ name: it.name, qty: it.qty, category: it.category, owner_id: session.user.id });
+      const { error } = await sb.from("closet_items").insert({ name: it.name, qty: it.qty, category: it.category, kind: kindOf(it), purpose: purposeOf(it), owner_id: session.user.id });
       error ? fail(error) : toast("Saved to your closet");
     });
   }
@@ -600,7 +707,7 @@
           const name = prompt("Template name", T.trip.name.replace(/\b(19|20)\d\d\b/g, "").trim() || T.trip.name);
           if (!name) return;
           must(await sb.from("templates").insert({ owner_id: session.user.id, name: name.trim().slice(0, 120), bags: T.trip.bags,
-            items: T.items.map((i) => ({ name: i.name, qty: i.qty, category: i.category, bag: i.bag })) }));
+            items: T.items.map((i) => ({ name: i.name, qty: i.qty, category: i.category, bag: i.bag, kind: kindOf(i), purpose: purposeOf(i) })) }));
           toast("Saved to Templates");
         }
         if (a === "copy") {
@@ -654,7 +761,7 @@
         let rows;
         try {
           const res = await api("/api/sort", { items: v, mode: "closet", categories: Object.keys(groups), have: items.map((i) => i.name) });
-          rows = res.items.map((i) => ({ name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other" }));
+          rows = res.items.map((i) => ({ name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", kind: i.kind || "gear", purpose: i.purpose || "personal" }));
         } catch (err) {
           if (err.status === 401) throw err;
           rows = v.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).map((name) => ({ name: name.slice(0, 200), category: "Other" }));

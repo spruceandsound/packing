@@ -179,3 +179,38 @@ textarea.t{min-height:170px;resize:vertical}
 @keyframes s{to{transform:rotate(360deg)}}
 .offline{background:var(--amber);color:#2b1d07;text-align:center;font-size:14px;font-weight:600;padding:6px 12px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:2s!important}}
+
+/* type filters, work/personal, bags & select (Oct 30, 2026) */
+.filters{display:flex;gap:6px;overflow-x:auto;margin:0 -16px 12px;padding:0 16px;scrollbar-width:none}
+.filters::-webkit-scrollbar{display:none}
+.filters button{flex:none;border:1px solid var(--line);background:var(--card);border-radius:99px;padding:8px 14px;font-size:15px;font-weight:600}
+.filters button small{color:var(--muted);font-weight:500;margin-left:2px}
+.filters button.on{background:var(--pine);border-color:var(--pine);color:var(--on-pine)}
+.filters button.on small{color:var(--on-pine-muted)}
+@media (prefers-color-scheme:dark){.filters button.on,.seg button.on,.pill.on{background:var(--amber);border-color:var(--amber);color:#2b1d07}.filters button.on small{color:#5a3e10}}
+.seg.wide{display:flex;width:100%}
+.seg.wide button{flex:1;padding:11px 8px}
+button.bagtag{flex:none;margin-right:12px;background:none;font:inherit;font-size:12px;cursor:pointer;max-width:42%;overflow:hidden;text-overflow:ellipsis}
+button.bagtag.empty{color:var(--muted);border-style:dashed;border-color:var(--line)}
+.worktag{flex:none;font-size:12px;font-weight:650;color:var(--amber-ink);background:color-mix(in srgb,var(--amber) 22%,transparent);border-radius:99px;padding:1px 8px}
+.cattag{flex:none;font-size:12px;color:var(--muted);white-space:nowrap}
+.box.round{border-radius:50%}
+.item.picked .box{background:var(--sky);border-color:var(--sky)}
+.item.picked .box svg{opacity:1}
+.item.picked{background:color-mix(in srgb,var(--sky) 8%,transparent)}
+.selecting .item.on .nm{text-decoration:none}
+.selbar{display:flex;flex-direction:column;gap:8px}
+.selrow{max-width:760px;width:100%;margin:0 auto;display:flex;gap:8px;align-items:center;justify-content:space-between}
+.selact{flex:1;border:0;border-radius:12px;padding:12px 6px;background:var(--pine);color:var(--on-pine);font-weight:650;font-size:15px}
+.selact:disabled{opacity:.4}
+@media (prefers-color-scheme:dark){.selact{background:var(--amber);color:#2b1d07}}
+.hintcard{display:block;width:100%;text-align:left;padding:14px 16px;margin-bottom:14px;color:var(--muted);font-size:15px}
+.hintcard strong{color:var(--ink)}
+.sheet .menu .cur{font-weight:700;color:var(--ok)}
+.toolbar .seg button,.toolbar .pill{padding:7px 12px;font-size:14px}
+.toolbar{gap:6px;margin-bottom:12px}
+.toolbar .spacer{flex:1}
+.add .selact{flex:1;min-width:0;padding:12px 6px;display:block;font-size:15px}
+.add .pill{background:var(--card);color:var(--ink);padding:6px 14px;min-width:0;border:1px solid var(--line);font-weight:600;display:inline-block}
+select.t{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2366706A' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:40px}
+.add .selact{font-size:14px;white-space:nowrap;padding:12px 4px}

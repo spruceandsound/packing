@@ -143,8 +143,10 @@ const SORT_TOOL = {
             note: { type: "string", description: "Only a note the user wrote; else empty" },
             category: { type: "string", description: "Short category, e.g. Documents, Clothes, Toiletries, Tech, Health" },
             bag: { type: "string", description: "One of the listed bags, or empty if no bags were listed" },
+            kind: { type: "string", enum: ["clothes", "gear", "essentials"], description: "clothes = anything worn (incl. shoes, accessories); essentials = documents, money, toiletries, meds; gear = everything else (tech, equipment, tools, bags, books)" },
+            purpose: { type: "string", enum: ["personal", "work"], description: "work = needed for the job or work purpose of the trip (e.g. camera kit for a shoot, laptop for a conference); otherwise personal" },
           },
-          required: ["name", "category"],
+          required: ["name", "category", "kind", "purpose"],
         },
       },
       suggestions: {
@@ -187,6 +189,7 @@ async function sort(req) {
     "Split the text into separate items (commas, new lines, 'and'). Fix spelling and capitalization. Merge duplicates.",
     "Move quantities like 'x3' or '3 shirts' into qty. Group into practical categories, documents and essentials first.",
     "Keep every item the person gave — never drop or rename one into something else.",
+    "Give every item a kind (clothes, gear or essentials) and a purpose (work or personal). Only mark work when the trip or item clearly involves work.",
     cats.length ? `Reuse these existing categories where they fit: ${cats.join(", ")}.` : "",
     have.length ? `Already on the list (don't repeat these, and don't suggest them): ${have.join(", ")}.` : "",
     mode === "trip" && bags.length ? `Assign every item to one of these bags, choosing sensibly (valuables, meds, chargers, batteries and documents in a carry-on; full-size liquids in a checked bag if there is one): ${bags.join(", ")}.` : "Leave bag empty.",
@@ -221,6 +224,8 @@ async function sort(req) {
   const clean = (out.items || []).map((i) => ({
     name: clip(i.name, 200), qty: clip(i.qty, 40), note: clip(i.note, 200),
     category: clip(i.category, 40) || "Other",
+    kind: ["clothes", "gear", "essentials"].includes(i.kind) ? i.kind : "gear",
+    purpose: i.purpose === "work" ? "work" : "personal",
     bag: bagSet.has(String(i.bag || "").toLowerCase()) ? bags.find((b) => b.toLowerCase() === String(i.bag).toLowerCase()) : "",
   })).filter((i) => i.name);
   const sugg = mode === "trip" ? (out.suggestions || []).slice(0, 6).map((s) => ({ name: clip(s.name, 80), why: clip(s.why, 80) })).filter((s) => s.name) : [];
