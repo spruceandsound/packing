@@ -276,8 +276,8 @@ a.pill{color:inherit}
 .lp-show p{font-size:18px;max-width:30em}
 .lp-flip .lp-phone{order:2}
 .lp-show .lp-phone{max-height:640px;overflow:hidden}
-.lp-feats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-.lp-feat{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px}
+.lp-feats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.lp-feat{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;min-width:0}
 .lp-ic{font-size:26px;margin-bottom:10px}
 .lp-final{background:var(--pine);color:var(--on-pine);text-align:center;padding:88px 0}
 .lp-final p{color:var(--on-pine-muted);font-size:18px;margin:0 0 28px}
@@ -289,16 +289,23 @@ a.pill{color:inherit}
   .lp-copy{padding-bottom:8px}
   .lp-hero .lp-phone{margin-bottom:-160px;transform:rotate(-2deg)}
   .lp-hero + .lp-section{padding-top:200px}
-  .lp-steps,.lp-feats{grid-template-columns:1fr}
+  .lp-steps{grid-template-columns:1fr}
   .lp-flip .lp-phone{order:0}
   .lp-section{padding:64px 0}
   .lp-show .lp-phone{max-height:520px}
 }
-@media (min-width:821px) and (max-width:1000px){.lp-feats{grid-template-columns:repeat(2,1fr)}}
+@media (min-width:600px) and (max-width:1000px){.lp-feats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* Phones: a compact list, icon beside the text, one feature per row */
+@media (max-width:599px){
+  .lp-feats{grid-template-columns:minmax(0,1fr);gap:0;background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden}
+  .lp-feat{display:grid;grid-template-columns:40px minmax(0,1fr);column-gap:14px;align-items:start;border:0;border-radius:0;padding:16px 18px;background:none}
+  .lp-feat + .lp-feat{border-top:1px solid var(--line)}
+  .lp-ic{grid-row:span 2;font-size:24px;margin:0;width:40px;height:40px;display:grid;place-items:center;border-radius:12px;background:var(--sunk)}
+  .lp-feat h3{font-size:17px;margin:0 0 2px}
+  .lp-feat p{font-size:15px;line-height:1.45}
+}
 #how{scroll-margin-top:70px}
 
-.lp-feats{grid-template-columns:repeat(3,1fr)}
-.lp-feat.lp-big{grid-column:span 1}
 
 /* trip sections, people, pack last, ledger */
 .triptabs{display:flex;background:var(--sunk);border-radius:12px;padding:4px;margin-bottom:14px;gap:4px}
