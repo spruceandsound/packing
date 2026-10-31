@@ -19,8 +19,7 @@ weather-aware suggestions. Trips can be shared so a group packs together.
   - `POST /api/test-reminder` (admins) emails you a sample day-before reminder
 - **Scheduled function** `netlify/functions/reminders.mjs` runs hourly and emails each trip member
   at 9am their time the day before a trip (via Resend)
-- Weather includes 48 hours of hourly detail for the first two days, and a live wind map from
-  earth.nullschool.net that opens full screen
+- Weather includes 48 hours of hourly detail for the first two days
 
 ## Environment variables (Netlify → Project configuration → Environment variables)
 
