@@ -16,6 +16,11 @@ weather-aware suggestions. Trips can be shared so a group packs together.
   - `POST /api/weather` gets the forecast from Open-Meteo (free, no key), or last year's
     weather for the same dates when the trip is more than ~2 weeks out
   - `POST /api/sort` checks the sign-in and the daily limit, then asks Claude to sort
+  - `POST /api/test-reminder` (admins) emails you a sample day-before reminder
+- **Scheduled function** `netlify/functions/reminders.mjs` runs hourly and emails each trip member
+  at 9am their time the day before a trip (via Resend)
+- Weather includes 48 hours of hourly detail for the first two days, and a live wind map from
+  earth.nullschool.net that opens full screen
 
 ## Environment variables (Netlify → Project configuration → Environment variables)
 
@@ -28,6 +33,8 @@ weather-aware suggestions. Trips can be shared so a group packs together.
 | `PACK_MODEL` | optional, default `claude-haiku-5-5` |
 | `PACK_DAILY_LIMIT` | optional, smart sorts per person per day, default 25 |
 | `PACK_SITE_DAILY_LIMIT` | optional, smart sorts for everyone combined per day, default 1000 |
+| `RESEND_API_KEY` | resend.com → API Keys (day-before reminder emails; domain spruceandsound.com verified in Resend) |
+| `PACK_FROM_EMAIL` | optional, default `Pack <hello@spruceandsound.com>` |
 
 ## Supabase settings
 

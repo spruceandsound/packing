@@ -617,7 +617,8 @@
     if (!fresh) { store.set("trip." + id, null); toast("That trip isn't available."); return go("#/"); }
     T = fresh; cacheTrip(); drawTrip();
 
-    const stale = !T.trip.weather || (Date.now() - new Date(T.trip.weather.fetched || 0) > 6 * 3600e3 && (!T.trip.end_date || T.trip.end_date >= today()));
+    const maxAge = (T.trip.weather?.hours?.length ? 2 : 6) * 3600e3;
+    const stale = !T.trip.weather || !("lat" in T.trip.weather) || (Date.now() - new Date(T.trip.weather.fetched || 0) > maxAge && (!T.trip.end_date || T.trip.end_date >= today()));
     if (T.trip.destination && stale) getWeather(T.trip).then(() => { if (T?.trip.id === id) drawTrip(); }).catch(() => {});
 
     // Live updates from other members
@@ -654,6 +655,58 @@
     store.set("trips", list);
   }
   const profileOf = (uid) => T.profiles.find((p) => p.id === uid) || { id: uid, display_name: "Someone" };
+
+  // ───────────── weather card: days, hour by hour, wind map ─────────────
+  const WXN = (c, day) => (!day && c != null && c <= 2 ? (c <= 1 ? "🌙" : "☁️") : WX(c));
+  const hourLabel = (t) => { const h = Number(t.slice(11, 13)); return h === 0 ? "12a" : h < 12 ? h + "a" : h === 12 ? "12p" : (h - 12) + "p"; };
+  const clock = (hm) => { if (!hm) return ""; const [h, m] = hm.split(":").map(Number); return `${h % 12 || 12}:${String(m).padStart(2, "0")}${h < 12 ? "am" : "pm"}`; };
+  let wxOpen = { hours: true };
+  function weatherCard(trip) {
+    const wx = trip.weather;
+    if (!(wx && Array.isArray(wx.days) && wx.days.length)) {
+      return trip.destination ? "" : `<a class="card wx" style="display:block;text-decoration:none;color:inherit;padding:14px 16px" href="#/trip/${trip.id}/edit"><span class="muted">Add a destination and dates to see the weather and get weather-smart suggestions →</span></a>`;
+    }
+    const windUnit = wx.units === "c" ? "km/h" : "mph";
+    const hours = Array.isArray(wx.hours) ? wx.hours : [];
+    const startsToday = hours.length && hours[0].t.slice(0, 10) === new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+    const d0 = wx.days[0];
+    const hasMap = Number.isFinite(Number(wx.lat)) && Number.isFinite(Number(wx.lon));
+    const mapUrl = hasMap ? `https://earth.nullschool.net/#current/wind/surface/level/orthographic=${Number(wx.lon)},${Number(wx.lat)},1800/loc=${Number(wx.lon)},${Number(wx.lat)}` : "";
+    return `<section class="card wx">
+      <div class="wx-head"><strong>${esc(wx.place)}</strong><span>${wx.kind === "typical" ? "Typical for your dates" : wx.kind === "next7" ? "Next 7 days" : "Forecast"}</span></div>
+      <div class="wx-days">${wx.days.map((d) => `<div class="wx-day"><div class="d">${esc(fmtDate(String(d.date).slice(0, 10), { weekday: "short" }))} ${esc(Number(String(d.date).slice(8, 10)))}</div>
+        <div class="i">${WX(Number(d.code))}</div><div class="h">${esc(Number(d.hi))}°</div><div class="l">${esc(Number(d.lo))}°</div>
+        <div class="p">${wx.kind === "typical" ? (Number(d.rain) > (wx.units === "c" ? 1 : 0.04) ? "rain" : "") : Number(d.rain) >= 20 ? esc(Number(d.rain)) + "%" : ""}</div></div>`).join("")}</div>
+      <div class="wx-sum">${esc(wx.summary)}</div>
+      ${hours.length ? `<button class="wx-toggle" data-wx="hours" aria-expanded="${wxOpen.hours}">${wxOpen.hours ? "▾" : "▸"} ${startsToday ? "Next 48 hours" : "Hour by hour, first two days"}</button>
+        ${d0?.sunrise && wxOpen.hours ? `<div class="wx-sun">Sunrise ${esc(clock(d0.sunrise))} · Sunset ${esc(clock(d0.sunset))}${d0.wind ? ` · Gusts to ${esc(Number(d0.wind))} ${windUnit}` : ""}</div>` : ""}
+        ${wxOpen.hours ? `<div class="wx-hours" role="list">${hours.map((h, i) => `${i && h.t.slice(11, 13) === "00" ? `<div class="wx-sep" role="presentation"><span>${esc(fmtDate(h.t.slice(0, 10), { weekday: "short" }))}</span></div>` : ""}<div class="wx-hour${h.day ? "" : " night"}" role="listitem">
+            <div class="t">${i === 0 && startsToday ? "Now" : hourLabel(h.t)}</div>
+            <div class="i">${WXN(Number(h.code), h.day)}</div>
+            <div class="h">${esc(Number(h.temp))}°</div>
+            ${Math.abs(Number(h.feels) - Number(h.temp)) >= 4 ? `<div class="f" title="Feels like">feels ${esc(Number(h.feels))}°</div>` : `<div class="f"></div>`}
+            <div class="p">${Number(h.rain) >= 10 ? esc(Number(h.rain)) + "%" : ""}</div>
+            <div class="w" title="Wind ${esc(Number(h.wind))} ${windUnit}"><span class="arr" style="transform:rotate(${(Number(h.dir) + 180) % 360}deg)">↑</span>${esc(Number(h.wind))}</div>
+          </div>`).join("")}</div>
+          <div class="wx-legend">Rain chance in blue · wind in ${windUnit}, arrow shows where it's blowing</div>` : ""}` : ""}
+      ${hasMap ? `<button class="wx-mapbtn" data-wxmap="${esc(mapUrl)}" data-place="${esc(wx.place)}"><span class="globe" aria-hidden="true">🌐</span>
+          <span class="grow"><strong>Live wind map</strong><span class="note">Wind and weather moving over ${esc(wx.place)} right now</span></span><span aria-hidden="true">⤢</span></button>` : ""}
+    </section>`;
+  }
+
+  function openWindMap(url, place) {
+    const el = document.createElement("div");
+    el.className = "mapview"; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true"); el.setAttribute("aria-label", "Live wind map");
+    el.innerHTML = `<div class="mapbar"><strong>🌬 ${esc(place)}</strong><a class="pill" href="${esc(url)}" target="_blank" rel="noopener">Open ↗</a><button class="icon-btn" aria-label="Close map">✕</button></div>
+      <iframe src="${esc(url)}" title="Live wind map around ${esc(place)}" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
+      <p class="mapnote">Map by earth.nullschool.net. Tap and drag to look around. If it doesn't appear, use Open ↗.</p>`;
+    const close = () => { el.remove(); document.removeEventListener("keydown", onKey); document.body.style.overflow = ""; };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    el.querySelector("button").addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    document.body.appendChild(el);
+  }
 
   function tripTabs(on) {
     const id = T.trip.id;
@@ -699,14 +752,7 @@
     const counts = (g) => { const all = shown.filter((i) => groupOf(i) === g); return `${all.filter((i) => i.packed).length}/${all.length}`; };
     const kindCount = (k) => inPurpose.filter((i) => k === "all" || kindOf(i) === k).length;
 
-    const wx = trip.weather;
-    const wxHtml = wx && Array.isArray(wx.days) && wx.days.length ? `<section class="card wx">
-        <div class="wx-head"><strong>${esc(wx.place)}</strong><span>${wx.kind === "typical" ? "Typical for your dates" : wx.kind === "next7" ? "Next 7 days" : "Forecast"}</span></div>
-        <div class="wx-days">${wx.days.map((d) => `<div class="wx-day"><div class="d">${esc(fmtDate(String(d.date).slice(0, 10), { weekday: "short" }))} ${esc(Number(String(d.date).slice(8, 10)))}</div>
-          <div class="i">${WX(Number(d.code))}</div><div class="h">${esc(Number(d.hi))}°</div><div class="l">${esc(Number(d.lo))}°</div>
-          <div class="p">${wx.kind === "typical" ? (Number(d.rain) > (wx.units === "c" ? 1 : 0.04) ? "rain" : "") : Number(d.rain) >= 20 ? esc(Number(d.rain)) + "%" : ""}</div></div>`).join("")}</div>
-        <div class="wx-sum">${esc(wx.summary)}</div></section>`
-      : trip.destination ? "" : `<a class="card wx" style="display:block;text-decoration:none;color:inherit;padding:14px 16px" href="#/trip/${trip.id}/edit"><span class="muted">Add a destination and dates to see the weather and get weather-smart suggestions →</span></a>`;
+    const wxHtml = weatherCard(trip);
 
     const sugg = Array.isArray(trip.suggestions) ? trip.suggestions : [];
     const ownerId = T.members.find((m) => m.role === "owner")?.user_id;
@@ -770,6 +816,8 @@
     window.scrollTo(0, scrollY);
 
     $$("[data-group]").forEach((b) => b.addEventListener("click", () => { view.group = b.dataset.group; store.set("group", view.group); drawTrip(); }));
+    $$("[data-wx]").forEach((b) => b.addEventListener("click", () => { wxOpen[b.dataset.wx] = !wxOpen[b.dataset.wx]; drawTrip(); }));
+    $("[data-wxmap]")?.addEventListener("click", (e) => openWindMap(e.currentTarget.dataset.wxmap, e.currentTarget.dataset.place));
     $$("[data-kind]").forEach((b) => b.addEventListener("click", () => { view.kind = b.dataset.kind; drawTrip(); }));
     $$("[data-purpose]").forEach((b) => b.addEventListener("click", () => { view.purpose = b.dataset.purpose; store.set("purpose", view.purpose); drawTrip(); }));
     $$("[data-who]").forEach((b) => b.addEventListener("click", () => { view.who = b.dataset.who; store.set("who", view.who); drawTrip(); }));

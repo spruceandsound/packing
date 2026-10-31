@@ -337,3 +337,28 @@ button.share.paid{border-color:color-mix(in srgb,var(--ok) 50%,var(--line));colo
 .lt-t{display:block;font-weight:700;font-size:16px}
 .lt-s{display:block;font-size:12.5px;color:var(--muted);margin-top:2px}
 .listhint{margin:0 4px 12px;font-size:13.5px}
+
+/* richer weather */
+.wx-toggle{display:flex;align-items:center;gap:6px;width:100%;border:0;border-top:1px solid var(--line);background:none;margin-top:12px;padding:12px 16px 4px;font:inherit;font-size:14px;font-weight:650;color:var(--ink);text-align:left}
+.wx-sun{padding:2px 16px 0 30px;font-size:13px;color:var(--muted)}
+.wx-hours{display:flex;gap:4px;overflow-x:auto;padding:8px 16px 6px;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch}
+.wx-hour{flex:none;width:54px;text-align:center;border-radius:10px;padding:6px 2px;scroll-snap-align:start}
+.wx-hour.night{background:color-mix(in srgb,var(--sky) 9%,transparent)}
+.wx-hour .t{font-size:12px;color:var(--muted);font-weight:600}
+.wx-hour .i{font-size:19px;line-height:1.45}
+.wx-hour .h{font-weight:700;font-size:15px}
+.wx-hour .f{font-size:10.5px;color:var(--muted);min-height:13px}
+.wx-hour .p{font-size:11.5px;color:var(--sky);font-weight:650;min-height:15px}
+.wx-hour .w{font-size:11.5px;color:var(--muted);white-space:nowrap}
+.wx-hour .arr{display:inline-block;margin-right:1px;font-weight:700}
+.wx-sep{flex:none;display:flex;align-items:center;padding:0 2px}
+.wx-sep span{writing-mode:vertical-rl;transform:rotate(180deg);font-size:11px;font-weight:700;color:var(--amber-ink);text-transform:uppercase;letter-spacing:.08em;border-left:1px solid var(--line);padding:0 4px 0 0}
+.wx-legend{font-size:12px;color:var(--muted);padding:2px 16px 0}
+.wx-mapbtn{display:flex;align-items:center;gap:12px;width:calc(100% - 32px);margin:12px 16px 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(120deg,color-mix(in srgb,var(--sky) 18%,var(--card)),var(--card));font:inherit;color:inherit;text-align:left}
+.wx-mapbtn .globe{font-size:26px}
+.mapview{position:fixed;inset:0;z-index:40;background:#000;display:flex;flex-direction:column;padding-top:var(--safe-t)}
+.mapbar{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--pine);color:var(--on-pine)}
+.mapbar strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mapbar .pill{color:var(--ink);text-decoration:none}
+.mapview iframe{flex:1;width:100%;border:0;background:#000}
+.mapnote{margin:0;padding:8px 12px calc(var(--safe-b) + 8px);font-size:12px;color:#9aa;background:#000;text-align:center}

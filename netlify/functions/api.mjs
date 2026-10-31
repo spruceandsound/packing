@@ -72,7 +72,9 @@ async function weather({ destination, start, end, units }) {
     const s = !start || start < today ? today : start;
     const e = !start ? addDays(today, 6) : end > lastForecastDay ? lastForecastDay : end;
     kind = start ? "forecast" : "next7";
-    url = `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&start_date=${s}&end_date=${e}${f}`;
+    // Hourly detail for the first two days (temperature, feels like, rain chance, wind).
+    const wind = units === "c" ? "&wind_speed_unit=kmh" : "&wind_speed_unit=mph";
+    url = `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,wind_speed_10m_max&hourly=temperature_2m,apparent_temperature,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m,is_day&timezone=auto&start_date=${s}&end_date=${e}${f}${wind}`;
   } else {
     // Too far out (or in the past): use the same dates last year as a guide.
     const back = (s) => `${Number(s.slice(0, 4)) - (s > today ? 1 : 0) - (s > today && addDays(s, -365) > today ? 1 : 0)}${s.slice(4)}`;
@@ -91,12 +93,26 @@ async function weather({ destination, start, end, units }) {
     rain: kind === "typical" ? (t.precipitation_sum[i] ?? 0) : (t.precipitation_probability_max[i] ?? 0),
   })).filter((x) => Number.isFinite(x.hi));
   if (!days.length) return { error: "Weather isn't available for those dates." };
+  // First 48 hours of the window, starting from this hour if the window starts today.
+  let hours = [];
+  if (d.hourly?.time) {
+    const h = d.hourly;
+    const nowLocal = new Date(Date.now() + (d.utc_offset_seconds || 0) * 1000).toISOString().slice(0, 13);
+    const from = Math.max(0, h.time.findIndex((x) => x.slice(0, 13) >= nowLocal));
+    hours = h.time.slice(from, from + 48).map((time, k) => {
+      const i = from + k;
+      return { t: time, temp: Math.round(h.temperature_2m[i]), feels: Math.round(h.apparent_temperature[i]), rain: h.precipitation_probability[i] ?? 0,
+        code: h.weather_code[i] ?? null, wind: Math.round(h.wind_speed_10m[i] ?? 0), dir: Math.round(h.wind_direction_10m[i] ?? 0), day: h.is_day[i] === 1 };
+    }).filter((x) => Number.isFinite(x.temp));
+    days.forEach((x, i) => { x.sunrise = d.daily.sunrise?.[i]?.slice(11, 16) || ""; x.sunset = d.daily.sunset?.[i]?.slice(11, 16) || ""; x.wind = Math.round(d.daily.wind_speed_10m_max?.[i] ?? 0); });
+  }
   const u = units === "c" ? "°C" : "°F";
   const his = days.map((x) => x.hi), los = days.map((x) => x.lo);
   const wet = kind === "typical" ? days.filter((x) => x.rain > (units === "c" ? 1 : 0.04)).length : days.filter((x) => x.rain >= 50).length;
   const conds = [...new Set(days.map((x) => WMO(x.code)).filter(Boolean))].slice(0, 3).join(", ");
   const summary = `${kind === "typical" ? "Typical for these dates" : "Forecast"}: highs ${Math.min(...his)}–${Math.max(...his)}${u}, lows ${Math.min(...los)}–${Math.max(...los)}${u}; ${wet ? `${wet} of ${days.length} days ${kind === "typical" ? "had" : "likely"} rain` : "mostly dry"}${conds ? ` (${conds})` : ""}.`;
-  return { place: geo.place, kind, units: units === "c" ? "c" : "f", days, summary, fetched: new Date().toISOString() };
+  return { place: geo.place, lat: Math.round(geo.lat * 1000) / 1000, lon: Math.round(geo.lon * 1000) / 1000, kind, units: units === "c" ? "c" : "f",
+    days, hours, summary, fetched: new Date().toISOString() };
 }
 
 // ───────────────────────── auth & limits ─────────────────────────
