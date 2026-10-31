@@ -1546,10 +1546,10 @@
     if (btn) { btn.disabled = false; btn.textContent = old; }
   }
   const mb = (n) => (n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB");
-  const platIcon = (p) => (/TikTok/.test(p) ? "♪" : /Story/.test(p) ? "◎" : /Carousel/.test(p) ? "▦" : "▶");
+  const platIcon = (p) => (/TikTok/.test(p) ? "♪" : /Story/.test(p) ? "◎" : /Reel|video/i.test(p) ? "▶" : "▦");
 
   async function renderContent() {
-    app.innerHTML = header({ title: "Content calendar", back: "#/admin", sub: "Instagram + TikTok · only you can see this" }) + `<main><p class="hint"><span class="spin"></span><span>Unlocking…</span></p></main>`;
+    app.innerHTML = header({ title: "Content calendar", back: "#/admin", sub: "Instagram + TikTok stills · only you can see this" }) + `<main><p class="hint"><span class="spin"></span><span>Unlocking…</span></p></main>`;
     try {
       await contentKey();
       if (!contentState.cal) contentState.cal = JSON.parse(new TextDecoder().decode(await decryptBlob("calendar.bin")));
@@ -1585,7 +1585,7 @@
       <div class="stats">${stat(C.days.length, "days")}${stat(allPosts.length, "posts")}${stat(`${done}/${allPosts.length}`, "posted")}</div>
       <div class="progress cc-prog"><i style="width:${Math.round((done / allPosts.length) * 100)}%"></i></div>
       <div class="card cc-dl">
-        <div class="cc-dlh"><b>Download</b><span class="muted">Each week's ZIP has every image, video and caption, sorted into a folder per day.</span></div>
+        <div class="cc-dlh"><b>Download</b><span class="muted">Each week's ZIP has every image and caption, in a folder per day (Instagram feed, TikTok and Stories kept separate).</span></div>
         ${C.downloads.map((x) => `<button class="secondary" data-dl="${esc(x.name)}">⬇ ${esc(x.label)} <small>${mb(C.files[x.name]?.size || 0)}</small></button>`).join("")}
         <div class="cc-dlrow">
           <button class="secondary" data-dl="pack-calendar.ics">📅 Posting times (.ics)</button>
@@ -1625,22 +1625,30 @@
     const C = contentState.cal, d = C.days.find((x) => String(x.day) === el.dataset.day);
     const files = [...new Set(d.posts.flatMap((p) => p.assets))];
     const copyBtn = (label, text) => `<button class="tog cc-copy" data-copy="${esc(text)}">${esc(label)}</button>`;
+    const media = (list) => `<div class="cc-media">${list.map((f) => `<figure data-f="${esc(f)}"><div class="cc-thumb ${/-ig-/.test(f) ? "feed" : ""}"><span class="spin"></span></div><figcaption>${esc(f)}</figcaption>
+        <button class="tog" data-dlf="${esc(f)}">Download</button></figure>`).join("")}</div>`;
     body.innerHTML = `
-      <div class="cc-media">${files.map((f) => `<figure data-f="${esc(f)}"><div class="cc-thumb ${/\.mp4$/.test(f) ? "vid" : ""}"><span class="spin"></span></div><figcaption>${esc(f)}</figcaption>
-        <button class="tog" data-dlf="${esc(f)}">Download</button></figure>`).join("") || `<p class="hint">Nothing to download for this day.</p>`}</div>
       ${d.ready ? `<p class="cc-ready">✓ The video is finished and ready to post. Add a trending sound inside the app.</p>` : ""}
       ${d.pain ? `<p class="cc-k"><b>Pain point</b>${esc(d.pain)}</p>` : ""}
-      <p class="cc-k"><b>Hook · first 3 seconds</b>${esc(d.hook)}</p>
-      ${d.onscreen.length ? `<div class="cc-k"><b>On-screen text</b><ol>${d.onscreen.map((t) => `<li>${esc(t)}</li>`).join("")}</ol></div>` : ""}
-      <div class="cc-k"><b>Script / shot list</b><ul class="cc-ul">${[...d.script, ...(d.extra_script || [])].map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>
+      ${d.onscreen?.length ? `<div class="cc-k"><b>On-screen text</b><ol>${d.onscreen.map((t) => `<li>${esc(t)}</li>`).join("")}</ol></div>` : ""}
+      ${d.script?.length ? `<div class="cc-k"><b>Script / shot list</b><ul class="cc-ul">${[...d.script, ...(d.extra_script || [])].map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
       ${d.cta ? `<p class="cc-k"><b>Call to action</b>${esc(d.cta)}</p>` : ""}
       ${d.posts.map((p) => `<div class="cc-post">
         <div class="cc-ph"><b>${platIcon(p.platform)} ${esc(p.platform)}</b><span>${esc(p.time)} PT${p.format ? " · " + esc(p.format) : ""}</span>
           <button class="tog ${contentState.posted.has(p.id) ? "on" : ""}" data-posted="${esc(p.id)}">${contentState.posted.has(p.id) ? "✓ Posted" : "Mark posted"}</button></div>
         <p class="cc-why">${esc(p.why)}</p>
-        <pre class="cc-cap">${esc(p.caption)}${p.hashtags ? "\n\n" + esc(p.hashtags) : ""}</pre>
-        <div class="cc-acts">${copyBtn("Copy caption + tags", p.caption + (p.hashtags ? "\n\n" + p.hashtags : ""))}${p.hashtags ? copyBtn("Copy tags", p.hashtags) : ""}</div>
+        ${p.assets.length ? media(p.assets) : ""}
+        ${p.assets.length > 1 ? `<button class="tog cc-all" data-dlall="${esc(p.assets.join("|"))}">Download all ${p.assets.length}</button>` : ""}
+        ${p.caption ? `<pre class="cc-cap">${esc(p.caption)}${p.hashtags ? "\n\n" + esc(p.hashtags) : ""}</pre>
+        <div class="cc-acts">${copyBtn("Copy caption + tags", p.caption + (p.hashtags ? "\n\n" + p.hashtags : ""))}${p.hashtags ? copyBtn("Copy tags", p.hashtags) : ""}</div>` : ""}
+        ${p.alt ? `<p class="cc-k cc-small"><b>Alt text</b>${esc(p.alt)}</p><div class="cc-acts">${copyBtn("Copy alt text", p.alt)}</div>` : ""}
+        ${p.note ? `<p class="cc-k cc-small"><b>How to post</b>${esc(p.note)}</p>` : ""}
       </div>`).join("")}`;
+    $$("[data-dlall]", body).forEach((b) => b.addEventListener("click", async () => {
+      const names = b.dataset.dlall.split("|"), old = b.textContent; b.disabled = true;
+      for (let i = 0; i < names.length; i++) { b.textContent = `Saving ${i + 1} of ${names.length}…`; await downloadContent(names[i]); await new Promise((r) => setTimeout(r, 450)); }
+      b.disabled = false; b.textContent = old;
+    }));
     $$("[data-copy]", body).forEach((b) => b.addEventListener("click", async () => {
       try { await navigator.clipboard.writeText(b.dataset.copy); toast("Copied"); } catch { toast("Couldn't copy — select the text and copy it instead"); }
     }));
@@ -1659,6 +1667,10 @@
       try {
         const url = await contentFile(f);
         box.innerHTML = /\.mp4$/.test(f) ? `<video src="${url}" controls playsinline preload="metadata"></video>` : `<img src="${url}" alt="">`;
+        const im = $("img", box); if (im) im.addEventListener("click", () => {
+          const lb = document.createElement("div"); lb.className = "cc-lb"; lb.innerHTML = `<img src="${url}" alt="">`;
+          lb.addEventListener("click", () => lb.remove()); document.body.append(lb);
+        });
       } catch { box.innerHTML = `<span class="muted">Couldn't load</span>`; }
     });
   }
