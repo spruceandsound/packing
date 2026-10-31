@@ -291,7 +291,7 @@
       <section class="lp-section"><div class="lp-wrap lp-show lp-flip">
         <div class="lp-phone"><img src="/img/people.webp" alt="A shared trip grouped by person: what you're bringing, what Sam is bringing and what anyone can bring, with a Pack last section at the top" width="780" height="1333" loading="lazy"></div>
         <div><p class="lp-eyebrow">Traveling together</p><h2>Who's bringing what, sorted</h2>
-          <p>Share a trip with one link. Assign the tent to Sam and the cooler to Jordan, then flip to <b>Mine</b> to see just your own list. Check-offs show up live on everyone's phone, and the things you'll use until the last second wait in their own <b>Pack last</b> list.</p></div>
+          <p>Share a trip with one link. Everyone keeps a private <b>My list</b> for their own clothes and gear, so two red shirts never collide, plus a shared <b>Group list</b> for the tent, the cooler and the speaker. Assign who's bringing what, and it shows up in their list too. Check-offs sync live, and last-second things wait in <b>Pack last</b>.</p></div>
       </div></section>
 
       <section class="lp-section lp-alt"><div class="lp-wrap">
@@ -536,16 +536,17 @@
 
   // Sort raw text with Claude and insert the results. If sorting fails, keep the raw lines so nothing is lost.
   // Items that couldn't be sorted (offline, or out of smart sorts) go in "Unsorted" so nothing is lost.
-  async function addUnsorted(trip, text) {
+  async function addUnsorted(trip, text, owner = session.user.id) {
     const lines = text.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).slice(0, 200);
     if (!lines.length) return;
     const base = T && T.trip.id === trip.id ? T.items.length : 0;
-    const rows = lines.map((name, i) => ({ id: newId(), trip_id: trip.id, name: name.slice(0, 200), qty: "", note: "", category: "Unsorted", bag: "", kind: "gear", purpose: "personal", packed: false, packed_by: null, position: 1000 + base + i }));
+    const rows = lines.map((name, i) => ({ id: newId(), trip_id: trip.id, personal_of: owner, name: name.slice(0, 200), qty: "", note: "", category: "Unsorted", bag: "", kind: "gear", purpose: "personal", packed: false, packed_by: null, position: 1000 + base + i }));
     if (T && T.trip.id === trip.id) { T.items.push(...rows.map((r) => ({ ...r, created_at: new Date().toISOString() }))); cacheTrip(); }
     await write({ type: "insert", table: "items", rows: rows.map(({ packed_by, ...r }) => r) });
   }
 
-  async function sortInto(trip, text, existing, weather, workNames = new Set()) {
+  async function sortInto(trip, text, existing, weather, workNames = new Set(), owner = session.user.id) {
+    existing = existing.filter((i) => inList(i, owner));
     let res;
     try {
       res = await api("/api/sort", {
@@ -556,13 +557,13 @@
       });
     } catch (e) {
       if (e.status === 401) throw e;
-      await addUnsorted(trip, text);
+      await addUnsorted(trip, text, owner);
       toast(isNet(e) ? "Added — Pack will sort them when you're back online." : (e.status === 429 ? e.message : "Couldn't sort right now.") + " Your items were added unsorted.", 5000);
       return;
     }
     const have = new Set(existing.map((i) => key(i.name)));
     const rows = res.items.filter((i) => !have.has(key(i.name)) && (have.add(key(i.name)), true))
-      .map((i, n) => ({ id: newId(), trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: workNames.has(key(i.name)) ? "work" : i.purpose || "personal", pack_last: !!i.last, position: existing.length + n }));
+      .map((i, n) => ({ id: newId(), trip_id: trip.id, personal_of: owner, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: workNames.has(key(i.name)) ? "work" : i.purpose || "personal", pack_last: !!i.last, position: existing.length + n }));
     if (rows.length) must(await sb.from("items").insert(rows));
     const allNames = new Set([...have, ...rows.map((r) => key(r.name))]);
     const prev = Array.isArray(trip.suggestions) ? trip.suggestions : [];
@@ -573,7 +574,11 @@
   }
 
   // ───────────────────────── one trip ─────────────────────────
-  const view = { group: store.get("group", "category"), hide: false, kind: "all", purpose: store.get("purpose", "all"), who: store.get("who", "all"), select: false, picked: new Set() };
+  const view = { group: store.get("group", "category"), hide: false, kind: "all", purpose: store.get("purpose", "all"), who: store.get("who", "all"), list: store.get("list", "mine"), select: false, picked: new Set() };
+  const GROUPMINE = "\u0000groupmine";
+  // Which list new items go to: your own list, or the shared group list.
+  const targetList = () => (T.members.length > 1 && view.list === "group" ? null : session.user.id);
+  const inList = (i, owner) => (owner ? i.personal_of === owner : !i.personal_of);
   const LAST = "\u0000last";
   const nameOf = (uid) => uid === session.user.id ? "You" : (profileOf(uid).display_name || profileOf(uid).email || "Someone");
   const KINDS = [["clothes", "Clothes"], ["gear", "Gear"], ["essentials", "Essentials"]];
@@ -659,18 +664,27 @@
   }
 
   function drawTrip() {
-    const { trip, items } = T;
-    const p = items.filter((i) => i.packed).length, n = items.length;
+    const { trip, items: all } = T;
+    const me_ = session.user.id;
     const shared = T.members.length > 1;
+    const onGroup = shared && view.list === "group";
+    // Solo trips show one list. Shared trips switch between your private list and the group list;
+    // your list also shows the group items you've said you'll bring.
+    const myItems = all.filter((i) => i.personal_of === me_ || (!shared && !i.personal_of));
+    const groupItems = all.filter((i) => !i.personal_of);
+    const myGroupJobs = groupItems.filter((i) => i.assigned_to === me_);
+    const items = !shared ? all : onGroup ? groupItems : [...myItems, ...myGroupJobs];
+    const p = items.filter((i) => i.packed).length, n = items.length;
     const byBag = view.group === "bag";
-    const byPerson = view.group === "person" && shared;
+    const byPerson = view.group === "person" && onGroup;
     const scrollY = window.scrollY;
     const hasWork = items.some((i) => purposeOf(i) === "work");
-    const whoOk = (i) => !shared || view.who === "all" || (view.who === "mine" ? i.assigned_to === session.user.id : !i.assigned_to);
+    const whoOk = (i) => !onGroup || view.who === "all" || (view.who === "mine" ? i.assigned_to === me_ : !i.assigned_to);
     const inPurpose = items.filter((i) => (view.purpose === "all" || purposeOf(i) === view.purpose) && whoOk(i));
     const shown = inPurpose.filter((i) => view.kind === "all" || kindOf(i) === view.kind);
+    const listStat = (arr) => `${arr.filter((i) => i.packed).length}/${arr.length}`;
 
-    const groupOf = (i) => (!byBag && i.pack_last) ? LAST : byBag ? bagOf(i) : byPerson ? (i.assigned_to || "") : i.category || "Other";
+    const groupOf = (i) => (shared && !onGroup && !i.personal_of) ? GROUPMINE : (!byBag && i.pack_last) ? LAST : byBag ? bagOf(i) : byPerson ? (i.assigned_to || "") : i.category || "Other";
     const groups = new Map();
     const order = byBag ? [...trip.bags, ""] : byPerson ? [LAST, session.user.id, ...T.members.map((m) => m.user_id).filter((u) => u !== session.user.id), ""] : [];
     for (const i of shown) {
@@ -679,8 +693,9 @@
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g).push(i);
     }
-    const names = byBag || byPerson ? order.filter((g) => groups.has(g)) : [...(groups.has(LAST) ? [LAST] : []), ...[...groups.keys()].filter((g) => g !== LAST)];
-    const groupLabel = (g) => g === LAST ? "⏰ Pack last" : byBag ? (g || "No bag yet") : byPerson ? (g ? (g === session.user.id ? "You're bringing" : `${nameOf(g)} is bringing`) : "Anyone can bring") : g || "Other";
+    const names = [...(byBag || byPerson ? order.filter((g) => groups.has(g)) : [...(groups.has(LAST) ? [LAST] : []), ...[...groups.keys()].filter((g) => g !== LAST && g !== GROUPMINE)]),
+      ...(groups.has(GROUPMINE) ? [GROUPMINE] : [])];
+    const groupLabel = (g) => g === GROUPMINE ? "👥 You're bringing for the group" : g === LAST ? "⏰ Pack last" : byBag ? (g || "No bag yet") : byPerson ? (g ? (g === session.user.id ? "You're bringing" : `${nameOf(g)} is bringing`) : "Anyone can bring") : g || "Other";
     const counts = (g) => { const all = shown.filter((i) => groupOf(i) === g); return `${all.filter((i) => i.packed).length}/${all.length}`; };
     const kindCount = (k) => inPurpose.filter((i) => k === "all" || kindOf(i) === k).length;
 
@@ -698,7 +713,7 @@
 
     app.innerHTML = header({
       title: trip.name, back: "#/", more: true, progress: n ? (p / n) * 100 : 0,
-      sub: [n ? `${p} of ${n} packed` : "No items yet", dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · "),
+      sub: [n ? `${p} of ${n} packed${shared ? (onGroup ? " (group)" : " (yours)") : ""}` : (shared && !onGroup ? "Your list is empty" : "No items yet"), dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · "),
     }) + `<main${view.select ? ' style="padding-bottom:calc(var(--safe-b) + 240px)"' : ""}>
       ${wxHtml}
       <div class="members">
@@ -707,14 +722,19 @@
         <button class="pill" id="shareBtn">Share</button>
       </div>
       ${tripTabs("packing")}
-      ${shared ? `<div class="seg wide" role="group" aria-label="Whose items" style="margin-bottom:12px">${[["all", "Everyone"], ["mine", "Mine"], ["open", "Unclaimed"]].map(([k, l]) =>
-        `<button class="${view.who === k ? "on" : ""}" data-who="${k}">${l} <small>${items.filter((i) => k === "all" || (k === "mine" ? i.assigned_to === session.user.id : !i.assigned_to)).length}</small></button>`).join("")}</div>` : ""}
+      ${shared ? `<div class="listtabs" role="tablist" aria-label="Which list">
+          <button role="tab" data-list="mine" class="${!onGroup ? "on" : ""}" aria-selected="${!onGroup}"><span class="lt-t">👤 My list</span><span class="lt-s">Just you · ${listStat([...myItems, ...myGroupJobs])} packed</span></button>
+          <button role="tab" data-list="group" class="${onGroup ? "on" : ""}" aria-selected="${onGroup}"><span class="lt-t">👥 Group list</span><span class="lt-s">Everyone · ${listStat(groupItems)} packed</span></button>
+        </div>
+        <p class="hint listhint">${onGroup ? "Shared stuff for the whole trip. Tap someone's name on an item to say who's bringing it." : "Only you can see this list. Add your own clothes and gear here, even if a friend is bringing the same thing."}</p>
+        ${onGroup ? `<div class="seg wide" role="group" aria-label="Whose items" style="margin-bottom:12px">${[["all", "All"], ["mine", "Yours"], ["open", "Unclaimed"]].map(([k, l]) =>
+          `<button class="${view.who === k ? "on" : ""}" data-who="${k}">${l} <small>${groupItems.filter((i) => k === "all" || (k === "mine" ? i.assigned_to === me_ : !i.assigned_to)).length}</small></button>`).join("")}</div>` : ""}` : ""}
       <div class="filters" role="group" aria-label="Show">
         ${[["all", "All"], ...KINDS].map(([k, label]) => `<button class="${view.kind === k ? "on" : ""}" data-kind="${k}">${label} <small>${kindCount(k)}</small></button>`).join("")}
       </div>
       <div class="toolbar">
         <div class="seg" role="group" aria-label="Work or personal">${[["all", "Both"], ["personal", "Personal"], ["work", "Work"]].map(([k, l]) => `<button class="${view.purpose === k ? "on" : ""}" data-purpose="${k}">${l}</button>`).join("")}</div>
-        <div class="seg" role="group" aria-label="Group by"><button class="${!byBag && !byPerson ? "on" : ""}" data-group="category">Category</button><button class="${byBag ? "on" : ""}" data-group="bag">Bag</button>${shared ? `<button class="${byPerson ? "on" : ""}" data-group="person">Person</button>` : ""}</div>
+        <div class="seg" role="group" aria-label="Group by"><button class="${!byBag && !byPerson ? "on" : ""}" data-group="category">Category</button><button class="${byBag ? "on" : ""}" data-group="bag">Bag</button>${onGroup ? `<button class="${byPerson ? "on" : ""}" data-group="person">Person</button>` : ""}</div>
       </div>
       <div class="toolbar">
         <button class="pill ${view.hide ? "on" : ""}" id="hideBtn">Hide packed</button><span class="spacer"></span>
@@ -733,7 +753,7 @@
             ${purposeOf(i) === "work" && view.purpose !== "work" ? `<span class="worktag">Work</span>` : ""}
             ${byBag ? `<span class="cattag">${esc(i.category)}</span>` : ""}
             ${byBag && i.pack_last ? `<span class="lasttag">Last</span>` : ""}
-            ${shared && i.assigned_to && !byPerson ? avatar(profileOf(i.assigned_to), "by who") : shared && i.packed && i.packed_by && i.packed_by !== session.user.id ? avatar(profileOf(i.packed_by), "by") : ""}
+            ${onGroup && i.assigned_to && !byPerson ? avatar(profileOf(i.assigned_to), "by who") : shared && i.packed && i.packed_by && i.packed_by !== session.user.id ? avatar(profileOf(i.packed_by), "by") : ""}
           </button>
           ${!byBag && !view.select ? `<button class="bagtag${i.bag ? "" : " empty"}" data-bag="${i.id}" aria-label="Bag for ${esc(i.name)}">${i.bag ? esc(i.bag) : "+ Bag"}</button>` : ""}
         </div>`).join("")}</section>`).join("") ||
@@ -743,16 +763,17 @@
       ? `<div class="add selbar"><div class="selrow"><span class="muted" style="font-size:14px">${view.picked.size ? `${view.picked.size} selected` : "Tap items to select"}</span>
           <button class="pill" id="selAll">${view.picked.size === shown.length && shown.length ? "None" : "All"}</button></div>
         <div class="selgrid">
-          ${[["bag", "Move to bag"], ...(shared ? [["who", "Assign"]] : []), ["last", "Pack last"], ["kind", "Type"], ["purpose", "Work / Personal"], ["inv", "To inventory"]]
+          ${[["bag", "Move to bag"], ...(onGroup ? [["who", "Assign"]] : []), ...(shared ? [["list", onGroup ? "To my list" : "To group list"]] : []), ["last", "Pack last"], ["kind", "Type"], ["purpose", "Work / Personal"], ["inv", "To inventory"]]
             .map(([a, l]) => `<button class="selact${a === "inv" ? " alt" : ""}" data-act="${a}" ${view.picked.size ? "" : "disabled"}>${l}</button>`).join("")}
         </div></div>`
-      : `<div class="add"><form id="addForm"><input class="t" id="addInput" placeholder="Add items… (any format)" autocomplete="off" enterkeyhint="send"><button type="submit" id="addBtn">Add</button></form></div>`}`;
+      : `<div class="add"><form id="addForm"><input class="t" id="addInput" placeholder="${shared ? (onGroup ? "Add to the group list…" : "Add to my list…") : "Add items… (any format)"}" autocomplete="off" enterkeyhint="send"><button type="submit" id="addBtn">Add</button></form></div>`}`;
     window.scrollTo(0, scrollY);
 
     $$("[data-group]").forEach((b) => b.addEventListener("click", () => { view.group = b.dataset.group; store.set("group", view.group); drawTrip(); }));
     $$("[data-kind]").forEach((b) => b.addEventListener("click", () => { view.kind = b.dataset.kind; drawTrip(); }));
     $$("[data-purpose]").forEach((b) => b.addEventListener("click", () => { view.purpose = b.dataset.purpose; store.set("purpose", view.purpose); drawTrip(); }));
     $$("[data-who]").forEach((b) => b.addEventListener("click", () => { view.who = b.dataset.who; store.set("who", view.who); drawTrip(); }));
+    $$("[data-list]").forEach((b) => b.addEventListener("click", () => { view.list = b.dataset.list; store.set("list", view.list); view.picked.clear(); if (view.group === "person" && view.list !== "group") view.group = "category"; drawTrip(); }));
     $("#hideBtn").addEventListener("click", () => { view.hide = !view.hide; drawTrip(); });
     $("#sortNow")?.addEventListener("click", (e) => { busy(e.currentTarget, true); sortUnsorted(); });
     $("#selBtn").addEventListener("click", () => { view.select = !view.select; view.picked.clear(); drawTrip(); });
@@ -767,6 +788,7 @@
       if (b.dataset.act === "kind") pickKind(ids);
       if (b.dataset.act === "purpose") pickPurpose(ids);
       if (b.dataset.act === "who") pickPerson(ids);
+      if (b.dataset.act === "list") moveToList(ids, onGroup ? me_ : null);
       if (b.dataset.act === "last") { const allLast = ids.every((id) => T.items.find((i) => i.id === id)?.pack_last); patchItems(ids, { pack_last: !allLast }, allLast ? "taken out of Pack last" : "moved to Pack last"); }
       if (b.dataset.act === "inv") { const list = T.items.filter((i) => view.picked.has(i.id)); view.picked.clear(); view.select = false; drawTrip(); addToInventory(list); }
     }));
@@ -840,6 +862,12 @@
         patchItems(ids, { bag: v }, v ? `moved to ${v}` : "taken out of bags");
       });
   }
+  function moveToList(ids, owner) {
+    // Group items assigned to you show in your list too; only move what actually changes lists.
+    const move = ids.filter((id) => { const i = T.items.find((x) => x.id === id); return i && (i.personal_of || null) !== owner; });
+    if (!move.length) { view.picked.clear(); view.select = false; drawTrip(); return toast(owner ? "Already in your list" : "Already in the group list"); }
+    patchItems(move, owner ? { personal_of: owner, assigned_to: null } : { personal_of: null }, owner ? "moved to your list" : "moved to the group list");
+  }
   function pickPerson(ids) {
     const one = ids.length === 1 ? T.items.find((i) => i.id === ids[0]) : null;
     const opts = [[session.user.id, "Me"], ...T.members.filter((m) => m.user_id !== session.user.id).map((m) => [m.user_id, nameOf(m.user_id)]), ["", "Anyone"]];
@@ -859,12 +887,12 @@
     const btn = $("#addBtn"); busy(btn, true);
     try {
       if (!navigator.onLine || outbox.length) {
-        await addUnsorted(T.trip, text);
+        await addUnsorted(T.trip, text, targetList());
         if (!navigator.onLine) toast("Added — Pack will sort them when you're back online.");
         else flush();
         drawTrip(); return true;
       }
-      await sortInto(T.trip, text, T.items, null);
+      await sortInto(T.trip, text, T.items, null, new Set(), targetList());
       const f = await fetchTrip(T.trip.id).catch(() => null); if (f) { T = f; cacheTrip(); }
       drawTrip(); return true;
     } catch (e) { busy(btn, false); fail(e); return false; }
@@ -872,10 +900,11 @@
 
   // Sort the items that were added offline (or when sorting was unavailable)
   async function sortUnsorted() {
-    const loose = T.items.filter((i) => i.category === "Unsorted");
+    const owner = targetList();
+    const loose = T.items.filter((i) => i.category === "Unsorted" && inList(i, owner));
     if (!loose.length || !navigator.onLine) return;
     await flush();
-    const keep = T.items.filter((i) => i.category !== "Unsorted");
+    const keep = T.items.filter((i) => i.category !== "Unsorted" && inList(i, owner));
     let res;
     try {
       res = await api("/api/sort", {
@@ -905,16 +934,18 @@
       <div><label class="f" for="ec">Category</label><input class="t" id="ec" value="${esc(it.category)}" list="cats" maxlength="40"><datalist id="cats">${cats.map((c) => `<option value="${esc(c)}">`).join("")}</datalist></div></div>
       <label class="f">Type</label><div class="seg wide" id="ek">${KINDS.map(([k, l]) => `<button type="button" data-k="${k}" class="${kindOf(it) === k ? "on" : ""}">${l}</button>`).join("")}</div>
       <label class="f">For</label><div class="seg wide" id="ep">${[["personal", "Personal"], ["work", "Work"]].map(([k, l]) => `<button type="button" data-k="${k}" class="${purposeOf(it) === k ? "on" : ""}">${l}</button>`).join("")}</div>
-      ${T.members.length > 1 ? `<label class="f" for="ew">Who's bringing it</label><select class="t" id="ew"><option value="">Anyone</option>${T.members.map((m) => `<option value="${m.user_id}"${m.user_id === it.assigned_to ? " selected" : ""}>${esc(m.user_id === session.user.id ? "Me" : nameOf(m.user_id))}</option>`).join("")}</select>` : ""}
+      ${T.members.length > 1 ? `<label class="f">List</label><div class="seg wide" id="elist">${[["mine", "👤 My list"], ["group", "👥 Group list"]].map(([k, l]) => `<button type="button" data-k="${k}" class="${(it.personal_of ? "mine" : "group") === k ? "on" : ""}">${l}</button>`).join("")}</div>` : ""}
+      ${T.members.length > 1 ? `<div id="ewrap"${it.personal_of ? ' class="hidden"' : ""}><label class="f" for="ew">Who's bringing it</label><select class="t" id="ew"><option value="">Anyone</option>${T.members.map((m) => `<option value="${m.user_id}"${m.user_id === it.assigned_to ? " selected" : ""}>${esc(m.user_id === session.user.id ? "Me" : nameOf(m.user_id))}</option>`).join("")}</select></div>` : ""}
       <label class="check-row"><input type="checkbox" id="el"${it.pack_last ? " checked" : ""}><span class="grow">Pack last <small class="muted">(you'll use it until you leave)</small></span></label>
       <label class="f" for="eb">Bag</label><select class="t" id="eb"><option value="">No bag</option>${T.trip.bags.map((b) => `<option${key(b) === key(it.bag) ? " selected" : ""}>${esc(b)}</option>`).join("")}<option value="__new">+ New bag…</option></select>
       <label class="f" for="eo">Note</label><input class="t" id="eo" value="${esc(it.note)}" maxlength="200">
       <button class="primary" type="submit">Save</button>
       ${inInventory(it) ? `<p class="hint" style="text-align:center;margin-top:12px">✓ In your inventory</p>` : `<button class="secondary" type="button" id="toCloset">Add to inventory</button>`}
       <button class="danger-btn" type="button" id="del">Remove from list</button></form>`);
-    for (const id of ["#ek", "#ep"]) $(id).addEventListener("click", (e) => {
+    for (const id of ["#ek", "#ep", "#elist"]) $(id)?.addEventListener("click", (e) => {
       const b = e.target.closest("[data-k]"); if (!b) return;
       $$("button", $(id)).forEach((x) => x.classList.toggle("on", x === b));
+      if (id === "#elist") $("#ewrap")?.classList.toggle("hidden", b.dataset.k === "mine");
     });
     $("#eb").addEventListener("change", async (e) => {
       if (e.target.value !== "__new") return;
@@ -926,7 +957,8 @@
       e.preventDefault();
       const patch = { name: $("#en").value.trim(), qty: $("#eq").value.trim(), category: $("#ec").value.trim() || "Other", note: $("#eo").value.trim(),
         bag: $("#eb").value === "__new" ? it.bag : $("#eb").value, kind: $("#ek .on")?.dataset.k || kindOf(it), purpose: $("#ep .on")?.dataset.k || purposeOf(it),
-        pack_last: $("#el").checked, ...($("#ew") ? { assigned_to: $("#ew").value || null } : {}) };
+        pack_last: $("#el").checked,
+        ...($("#elist") ? ($("#elist .on")?.dataset.k === "mine" ? { personal_of: session.user.id, assigned_to: null } : { personal_of: null, assigned_to: $("#ew")?.value || null }) : {}) };
       closeSheet(); Object.assign(it, patch); cacheTrip(); drawTrip();
       write({ type: "update", table: "items", ids: [it.id], patch }).catch(fail);
     });

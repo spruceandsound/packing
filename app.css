@@ -328,3 +328,12 @@ a.pill{color:inherit}
 button.share{cursor:pointer;border-color:color-mix(in srgb,var(--err) 40%,var(--line))}
 button.share.paid{border-color:color-mix(in srgb,var(--ok) 50%,var(--line));color:var(--ok);background:color-mix(in srgb,var(--ok) 8%,var(--bg))}
 .add .primary{padding:14px;min-width:0;display:flex;font-size:17px;width:100%}
+
+/* my list vs group list */
+.listtabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px}
+.listtabs button{text-align:left;border:1.5px solid var(--line);background:var(--card);border-radius:14px;padding:11px 13px;font:inherit;color:inherit}
+.listtabs button.on{border-color:var(--pine);background:color-mix(in srgb,var(--pine) 8%,var(--card));box-shadow:inset 0 0 0 1px var(--pine)}
+@media (prefers-color-scheme:dark){.listtabs button.on{border-color:var(--amber);box-shadow:inset 0 0 0 1px var(--amber);background:color-mix(in srgb,var(--amber) 10%,var(--card))}}
+.lt-t{display:block;font-weight:700;font-size:16px}
+.lt-s{display:block;font-size:12.5px;color:var(--muted);margin-top:2px}
+.listhint{margin:0 4px 12px;font-size:13.5px}
