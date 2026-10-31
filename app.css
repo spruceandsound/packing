@@ -216,3 +216,4 @@ select.t{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.or
 .add .selact{font-size:14px;white-space:nowrap;padding:12px 4px}
 .seg.wide button small{opacity:.7;font-weight:500;margin-left:2px}
 .row .linkish{flex:1;min-width:0;border:0;background:none;text-align:left;padding:0;font:inherit;color:inherit}
+.add .selact.alt{background:var(--card);color:var(--ink);border:1px solid var(--line)}

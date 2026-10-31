@@ -131,7 +131,7 @@
       if (view === "trip" && id && sub === "edit") return await renderTripForm(id);
       if (view === "trip" && id) return await renderTrip(id);
       if (view === "new") return await renderTripForm(null, id);
-      if (view === "closet") return await renderCloset();
+      if (view === "inventory" || view === "closet") return await renderCloset();
       if (view === "templates") return await renderTemplates();
       if (view === "template" && id) return await renderTemplate(id);
       if (view === "account") return renderAccount();
@@ -142,7 +142,7 @@
 
   function tabs(on) {
     const t = (href, name, label) => `<a href="${href}" class="${on === name ? "on" : ""}">${ICON[name]}<span>${label}</span></a>`;
-    return `<nav class="tabs">${t("#/", "trips", "Trips")}${t("#/closet", "closet", "Closet")}${t("#/templates", "tpl", "Templates")}${t("#/account", "me", "You")}</nav>`;
+    return `<nav class="tabs">${t("#/", "trips", "Trips")}${t("#/inventory", "closet", "Inventory")}${t("#/templates", "tpl", "Templates")}${t("#/account", "me", "You")}</nav>`;
   }
   const header = ({ title, sub = "", back = "", more = false, progress = null }) => `
     <header class="bar"><div class="bar-row">
@@ -289,7 +289,7 @@
         ${editing ? "" : `
         ${tpls.length ? `<label class="f" for="tpl">Start from a template <small>(optional)</small></label>
           <select class="t" id="tpl"><option value="">None</option>${tpls.map((t) => `<option value="${t.id}"${tpl?.id === t.id ? " selected" : ""}>${esc(t.name)} (${(t.items || []).length} items)</option>`).join("")}</select>` : ""}
-        ${always.length ? `<label class="check-row"><input type="checkbox" id="always" checked><span class="grow">Add my ${always.length} always-pack item${always.length === 1 ? "" : "s"} from the closet</span></label>` : ""}
+        ${always.length ? `<label class="check-row"><input type="checkbox" id="always" checked><span class="grow">Add my ${always.length} always-pack item${always.length === 1 ? "" : "s"} from your inventory</span></label>` : ""}
         ${equipment.length ? `<label class="check-row"><input type="checkbox" id="equip"><span class="grow">Bring my equipment (${equipment.length} item${equipment.length === 1 ? "" : "s"})</span></label>` : ""}
         <label class="f" for="items">Everything you're bringing</label>
         <textarea class="t" id="items" placeholder="passport, charger, 3 tshirts, toothbrush, jeans x2, rain jacket, camera + 2 batteries…"></textarea>
@@ -392,19 +392,30 @@
   const KINDS = [["clothes", "Clothes"], ["gear", "Gear"], ["essentials", "Essentials"]];
   const kindOf = (i) => i.kind || "gear";
   const purposeOf = (i) => i.purpose || "personal";
+  const inInventory = (i) => (T.inventory || []).includes(key(i.name));
+  async function addToInventory(list) {
+    const fresh = list.filter((i) => !inInventory(i));
+    if (!fresh.length) return toast(list.length > 1 ? "Those are all in your inventory already" : "Already in your inventory");
+    const { error } = await sb.from("closet_items").insert(fresh.map((i) => ({ name: i.name, qty: i.qty, note: i.note, category: i.category, kind: kindOf(i), purpose: purposeOf(i), owner_id: session.user.id })));
+    if (error) return fail(error);
+    T.inventory = [...(T.inventory || []), ...fresh.map((i) => key(i.name))]; store.set("trip." + T.trip.id, T);
+    const skipped = list.length - fresh.length;
+    toast(`${fresh.length === 1 && list.length === 1 ? "Added" : fresh.length + " added"} to your inventory${skipped ? ` (${skipped} already there)` : ""}`);
+  }
   const bagOf = (i) => T.trip.bags.find((b) => key(b) === key(i.bag)) || "";
   let T = null; // current trip state: { trip, items, members, profiles }
 
   async function fetchTrip(id) {
-    const [trip, items, members] = await Promise.all([
+    const [trip, items, members, inv] = await Promise.all([
       sb.from("trips").select("*").eq("id", id).maybeSingle().then(must),
       sb.from("items").select("*").eq("trip_id", id).order("position").order("created_at").then(must),
       sb.from("trip_members").select("user_id,role").eq("trip_id", id).then(must),
+      sb.from("closet_items").select("name").eq("owner_id", session.user.id).then(must),
     ]);
     if (!trip) return null;
     const ids = members.map((m) => m.user_id);
     const profiles = ids.length ? must(await sb.from("profiles").select("id,email,display_name").in("id", ids)) : [];
-    return { trip, items, members, profiles };
+    return { trip, items, members, profiles, inventory: inv.map((i) => key(i.name)) };
   }
 
   async function renderTrip(id) {
@@ -470,7 +481,7 @@
     app.innerHTML = header({
       title: trip.name, back: "#/", more: true, progress: n ? (p / n) * 100 : 0,
       sub: [n ? `${p} of ${n} packed` : "No items yet", dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · "),
-    }) + `<main>
+    }) + `<main${view.select ? ' style="padding-bottom:calc(var(--safe-b) + 240px)"' : ""}>
       ${wxHtml}
       <div class="members">
         <span class="avs">${T.members.map((m) => avatar(profileOf(m.user_id))).join("")}</span>
@@ -513,7 +524,8 @@
           <button class="selact" data-act="bag" ${view.picked.size ? "" : "disabled"}>Move to bag</button>
           <button class="selact" data-act="kind" ${view.picked.size ? "" : "disabled"}>Type</button>
           <button class="selact" data-act="purpose" ${view.picked.size ? "" : "disabled"}>Work / Personal</button>
-        </div></div>`
+        </div>
+        <div class="selrow"><button class="selact alt" data-act="inv" ${view.picked.size ? "" : "disabled"}>Add to inventory</button></div></div>`
       : `<div class="add"><form id="addForm"><input class="t" id="addInput" placeholder="Add items… (any format)" autocomplete="off" enterkeyhint="send"><button type="submit" id="addBtn">Add</button></form></div>`}`;
     window.scrollTo(0, scrollY);
 
@@ -532,6 +544,7 @@
       if (b.dataset.act === "bag") pickBag(ids);
       if (b.dataset.act === "kind") pickKind(ids);
       if (b.dataset.act === "purpose") pickPurpose(ids);
+      if (b.dataset.act === "inv") { const list = T.items.filter((i) => view.picked.has(i.id)); view.picked.clear(); view.select = false; drawTrip(); addToInventory(list); }
     }));
     $("#shareBtn").addEventListener("click", shareTrip);
     $("#moreBtn").addEventListener("click", () => tripMenu(ownerId === session.user.id));
@@ -632,7 +645,7 @@
       <label class="f" for="eb">Bag</label><select class="t" id="eb"><option value="">No bag</option>${T.trip.bags.map((b) => `<option${key(b) === key(it.bag) ? " selected" : ""}>${esc(b)}</option>`).join("")}<option value="__new">+ New bag…</option></select>
       <label class="f" for="eo">Note</label><input class="t" id="eo" value="${esc(it.note)}" maxlength="200">
       <button class="primary" type="submit">Save</button>
-      <button class="secondary" type="button" id="toCloset">Save to my closet</button>
+      ${inInventory(it) ? `<p class="hint" style="text-align:center;margin-top:12px">✓ In your inventory</p>` : `<button class="secondary" type="button" id="toCloset">Add to inventory</button>`}
       <button class="danger-btn" type="button" id="del">Remove from list</button></form>`);
     for (const id of ["#ek", "#ep"]) $(id).addEventListener("click", (e) => {
       const b = e.target.closest("[data-k]"); if (!b) return;
@@ -655,11 +668,7 @@
       closeSheet(); T.items = T.items.filter((x) => x !== it); drawTrip();
       const { error } = await sb.from("items").delete().eq("id", it.id); if (error) fail(error);
     });
-    $("#toCloset").addEventListener("click", async () => {
-      closeSheet();
-      const { error } = await sb.from("closet_items").insert({ name: it.name, qty: it.qty, category: it.category, kind: kindOf(it), purpose: purposeOf(it), owner_id: session.user.id });
-      error ? fail(error) : toast("Saved to your closet");
-    });
+    $("#toCloset")?.addEventListener("click", async () => { closeSheet(); await addToInventory([it]); });
   }
 
   async function shareTrip() {
@@ -746,7 +755,7 @@
     const alwaysN = items.filter((i) => i.always).length;
     const isEquip = closetTab === "work";
     const n = (t) => all.filter((i) => tabOf(i) === t).length;
-    app.innerHTML = header({ title: "Closet", sub: "Things you own and pack often. Mark “Always” to add them to every new trip." }) + `<main class="tabbed">
+    app.innerHTML = header({ title: "Inventory", sub: "Things you own and pack often. Mark “Always” to add them to every new trip." }) + `<main class="tabbed">
       <div class="seg wide" role="tablist" style="margin-bottom:14px">
         <button role="tab" data-ctab="personal" class="${!isEquip ? "on" : ""}" aria-selected="${!isEquip}">Personal <small>${n("personal")}</small></button>
         <button role="tab" data-ctab="work" class="${isEquip ? "on" : ""}" aria-selected="${isEquip}">Equipment <small>${n("work")}</small></button>

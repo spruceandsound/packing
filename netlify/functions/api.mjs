@@ -184,7 +184,7 @@ async function sort(req) {
 
   const lines = [
     mode === "closet"
-      ? "Organize these items for someone's personal gear closet (things they own and often pack)."
+      ? "Organize these items for someone's personal inventory (things they own and often pack)."
       : "Organize these items into a packing list.",
     "Split the text into separate items (commas, new lines, 'and'). Fix spelling and capitalization. Merge duplicates.",
     "Move quantities like 'x3' or '3 shirts' into qty. Group into practical categories, documents and essentials first.",
