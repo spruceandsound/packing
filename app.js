@@ -28,6 +28,8 @@
   const avatar = (p, cls = "") => `<span class="av ${cls}" style="background:${colorFor(p?.id)}" title="${esc(p?.display_name || p?.email || "")}">${esc(initials(p))}</span>`;
 
   const ICON = {
+    sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>',
+    moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7z"/></svg>',
     back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
     more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
     plus: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
@@ -233,10 +235,31 @@
     const t = (href, name, label) => `<a href="${href}" class="${on === name ? "on" : ""}">${ICON[name]}<span>${label}</span></a>`;
     return `<nav class="tabs">${t("#/", "trips", "Trips")}${t("#/inventory", "closet", "Inventory")}${t("#/templates", "tpl", "Templates")}${t("#/account", "me", "You")}</nav>`;
   }
+
+  // ───────────────────────── light / dark ─────────────────────────
+  const darkMQ = matchMedia("(prefers-color-scheme: dark)");
+  const themePref = () => store.get("theme", "system");
+  const isDark = () => (themePref() === "system" ? darkMQ.matches : themePref() === "dark");
+  const themeIcon = () => (isDark() ? ICON.sun : ICON.moon);
+  const themeLabel = () => (isDark() ? "Switch to light mode" : "Switch to dark mode");
+  function applyTheme(pref) {
+    store.set("theme", pref === "system" ? null : pref);
+    if (pref === "light" || pref === "dark") document.documentElement.dataset.theme = pref; else delete document.documentElement.dataset.theme;
+    for (const b of document.querySelectorAll("[data-theme-toggle]")) { b.innerHTML = themeIcon(); b.setAttribute("aria-label", themeLabel()); b.title = themeLabel(); }
+    for (const b of document.querySelectorAll("[data-theme-pick]")) b.classList.toggle("on", b.dataset.themePick === themePref());
+  }
+  const themeBtn = (cls = "icon-btn theme-btn") => `<button type="button" class="${cls}" data-theme-toggle aria-label="${themeLabel()}" title="${themeLabel()}">${themeIcon()}</button>`;
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-theme-toggle]")) return applyTheme(isDark() ? "light" : "dark");
+    const p = e.target.closest("[data-theme-pick]"); if (p) applyTheme(p.dataset.themePick);
+  });
+  darkMQ.addEventListener?.("change", () => applyTheme(themePref()));
+
   const header = ({ title, sub = "", back = "", more = false, progress = null }) => `
     <header class="bar"><div class="bar-row">
       ${back ? `<a class="icon-btn" href="${back}" aria-label="Back">${ICON.back}</a>` : ""}
       <h1>${esc(title)}</h1>
+      ${themeBtn()}
       ${more ? `<button class="icon-btn" id="moreBtn" aria-label="More">${ICON.more}</button>` : ""}
     </div>${sub ? `<div class="sub">${sub}</div>` : ""}${progress != null ? `<div class="progress"><i style="width:${progress}%"></i></div>` : ""}<div id="netbar" class="netbar hidden" role="status"></div></header>`;
 
@@ -248,7 +271,7 @@
     app.innerHTML = `<div class="lp">
       <header class="lp-nav"><div class="lp-wrap lp-navrow">
         <a class="lp-brand" href="#/"><img src="/apple-touch-icon.png" alt="" width="32" height="32">Pack</a>
-        <a class="lp-signin" href="#/signin">Sign in</a>
+        <div class="lp-navright">${themeBtn("lp-theme")}<a class="lp-signin" href="#/signin">Sign in</a></div>
       </div></header>
 
       <section class="lp-hero"><div class="lp-wrap lp-herogrid">
@@ -328,7 +351,7 @@
     document.title = "Pack";
     const invite = store.get(pendingJoinKey, null);
     if (step === "email") {
-      app.innerHTML = `<section class="auth"><form id="f">
+      app.innerHTML = `${themeBtn("auth-theme")}<section class="auth"><form id="f">
         <img src="/apple-touch-icon.png" alt="">
         <h1>Pack</h1>
         <p>${invite ? "Sign in to join the trip you were invited to." : "Dump everything you're bringing. Pack sorts it into a smart list."}</p>
@@ -356,7 +379,7 @@
         if (error) $("#err").textContent = error.message;
       });
     } else {
-      app.innerHTML = `<section class="auth"><form id="f">
+      app.innerHTML = `${themeBtn("auth-theme")}<section class="auth"><form id="f">
         <img src="/apple-touch-icon.png" alt="">
         <h1>Check your email</h1>
         <p>We sent a code to <strong>${esc(email)}</strong>. Enter it here.</p>
@@ -380,7 +403,7 @@
   async function acceptInvite(token) {
     store.set(pendingJoinKey, null);
     const ok = await new Promise((resolve) => {
-      app.innerHTML = `<section class="auth"><div class="inner"><img src="/apple-touch-icon.png" alt="">
+      app.innerHTML = `${themeBtn("auth-theme")}<section class="auth"><div class="inner"><img src="/apple-touch-icon.png" alt="">
         <h1>Join a shared trip?</h1><p>Someone invited you to pack together. Joining shows them your name and email, and you'll see theirs.</p>
         <button class="go" id="yes">Join trip</button><button class="link" id="no">Not now</button></div></section>`;
       $("#yes").addEventListener("click", () => resolve(true));
@@ -1523,6 +1546,8 @@
       <form id="nf"><label class="f" for="dn">Your name <small>(shown to people you pack with)</small></label>
         <input class="t" id="dn" value="${esc(me?.display_name || "")}" maxlength="60">
         <button class="secondary" type="submit">Save name</button></form>
+      <h3 class="sec">Appearance</h3>
+      <div class="seg wide" role="group" aria-label="Appearance">${[["system", "Match system"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) => `<button type="button" data-theme-pick="${k}" class="${themePref() === k ? "on" : ""}">${l}</button>`).join("")}</div>
       <h3 class="sec">Reminders</h3>
       <label class="check-row" style="margin-top:0"><input type="checkbox" id="remind"${me?.reminders === false ? "" : " checked"}><span class="grow">Email me the day before a trip<br><small class="muted">What's left to pack and what to grab last, sent around 9am your time.</small></span></label>
       <h3 class="sec">Smart sorting</h3>

@@ -1,7 +1,7 @@
 // Pack service worker: opens offline. Same-origin files are network-first (updates show
 // right away); the Supabase library from the CDN is cache-first. /api and /content are never cached.
-const CACHE = "pack-v4";
-const SHELL = ["/", "/app.js", "/app.css", "/manifest.webmanifest", "/apple-touch-icon.png", "/icon-192.png"];
+const CACHE = "pack-v5";
+const SHELL = ["/", "/app.js", "/app.css", "/theme.js", "/manifest.webmanifest", "/apple-touch-icon.png", "/icon-192.png"];
 const LIB = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js";
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then(async (c) => { await c.addAll(SHELL); try { await c.add(new Request(LIB, { mode: "no-cors" })); } catch {} }));
