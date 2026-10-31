@@ -1,5 +1,7 @@
 # Keep source files out of reach
-/netlify/*     /  404!
-/supabase/*    /  404!
-/netlify.toml  /  404!
-/README.md     /  404!
+/netlify/*     /404.html  404!
+/supabase/*    /404.html  404!
+/netlify.toml  /404.html  404!
+/README.md     /404.html  404!
+# Other Spruce & Sound sites point here while they're switched off
+/404           /404.html  404
