@@ -125,6 +125,9 @@
     if (view === "join" && id) store.set(pendingJoinKey, id);
     if (!session) return $(".auth #email, .auth #code") ? undefined : renderSignIn();
     await loadMe().catch(() => {});
+    if (store.get("activeDay", "") !== today() && navigator.onLine) {
+      sb.rpc("touch_activity").then(({ error }) => { if (!error) store.set("activeDay", today()); });
+    }
     const join = store.get(pendingJoinKey, null);
     if (join) return acceptInvite(join);
     try {
@@ -134,7 +137,8 @@
       if (view === "inventory" || view === "closet") return await renderCloset();
       if (view === "templates") return await renderTemplates();
       if (view === "template" && id) return await renderTemplate(id);
-      if (view === "account") return renderAccount();
+      if (view === "account") return await renderAccount();
+      if (view === "admin") return await renderAdmin();
       return await renderHome();
     } catch (e) { fail(e); }
   }
@@ -853,9 +857,45 @@
   }
 
   // ───────────────────────── account ─────────────────────────
-  function renderAccount() {
-    app.innerHTML = header({ title: "You" }) + `<main class="tabbed">
+  // ───────────────────────── you: stats + account ─────────────────────────
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const tripDays = (t) => !t.start_date ? 0 : Math.round((new Date((t.end_date || t.start_date) + "T12:00:00") - new Date(t.start_date + "T12:00:00")) / 864e5) + 1;
+  function barChart(rows, field, label, color) {
+    const W = 340, H = 110, max = Math.max(1, ...rows.map((r) => r[field])), bw = W / rows.length;
+    const total = rows.reduce((a, r) => a + r[field], 0);
+    return `<figure class="card chart"><figcaption><strong>${esc(label)}</strong><span>${total} in 30 days · peak ${max}</span></figcaption>
+      <svg viewBox="0 0 ${W} ${H + 18}" role="img" aria-label="${esc(label)}, last 30 days">
+        <line x1="0" y1="${H}" x2="${W}" y2="${H}" stroke="var(--line)"/>
+        ${rows.map((r, i) => { const h = (r[field] / max) * (H - 8); return `<rect x="${i * bw + 1.5}" y="${H - h}" width="${bw - 3}" height="${h}" rx="2" fill="${color}"><title>${esc(fmtDate(r.day))}: ${r[field]}</title></rect>`; }).join("")}
+        <text x="0" y="${H + 14}" font-size="10" fill="var(--muted)">${esc(fmtDate(rows[0].day))}</text>
+        <text x="${W}" y="${H + 14}" font-size="10" fill="var(--muted)" text-anchor="end">Today</text>
+      </svg></figure>`;
+  }
+  const stat = (n, label) => `<div class="stat"><b>${esc(n)}</b><span>${esc(label)}</span></div>`;
+
+  async function renderAccount() {
+    const draw = (st, admin) => {
+      app.innerHTML = header({ title: "You" }) + `<main class="tabbed">
       <div class="card" style="padding:16px;display:flex;gap:14px;align-items:center">${avatar(me)}<div class="grow"><strong>${esc(me?.display_name || "")}</strong><div class="muted" style="font-size:14px">${esc(me?.email || session.user.email || "")}</div></div></div>
+      ${admin ? `<a class="secondary admin-link" href="#/admin">Admin dashboard →</a>` : ""}
+      <h3 class="sec">Your packing</h3>
+      ${st ? `<div class="stats">
+        ${stat(st.trips, st.trips === 1 ? "trip planned" : "trips planned")}
+        ${stat(st.upcoming, "upcoming")}
+        ${stat(st.days, st.days === 1 ? "day away" : "days away")}
+        ${stat(st.packed, "items packed")}
+        ${stat(st.avg, "items per trip")}
+        ${stat(st.shared, st.shared === 1 ? "shared trip" : "shared trips")}
+      </div>
+      ${st.top.length ? `<div class="card" style="padding:14px 16px;margin-top:12px"><div class="muted" style="font-size:13px;font-weight:650;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Always comes with you</div>
+        <div class="chips">${st.top.map(([n, c]) => `<span class="chip">${esc(n)} <small>×${c}</small></span>`).join("")}</div></div>` : ""}
+      <div class="card" style="padding:14px 16px;margin-top:12px;display:flex;gap:16px">
+        <div class="grow"><div class="muted" style="font-size:13px">Inventory</div><strong>${plural(st.personal, "personal item")} · ${plural(st.equipment, "piece")} of equipment</strong></div>
+        <a class="pill" href="#/inventory" style="align-self:center;text-decoration:none">Open</a></div>
+      <div class="kindbar" aria-label="What you pack">${[["clothes", "Clothes"], ["gear", "Gear"], ["essentials", "Essentials"]].map(([k, l]) =>
+        `<span style="flex:${st.kinds[k] || 0.0001}" class="k-${k}" title="${l}: ${st.kinds[k] || 0}"></span>`).join("")}</div>
+      <p class="hint" style="margin:6px 4px 0">${[["clothes", "Clothes"], ["gear", "Gear"], ["essentials", "Essentials"]].map(([k, l]) => `<span class="dot k-${k}"></span>${l} ${st.kinds[k] || 0}`).join(" · ")}</p>`
+      : `<p class="hint" style="margin:0 4px"><span class="spin"></span><span>Counting…</span></p>`}
       <form id="nf"><label class="f" for="dn">Your name <small>(shown to people you pack with)</small></label>
         <input class="t" id="dn" value="${esc(me?.display_name || "")}" maxlength="60">
         <button class="secondary" type="submit">Save name</button></form>
@@ -865,18 +905,73 @@
       <p class="hint" style="margin:0 4px">In Safari, tap Share → <strong>Add to Home Screen</strong> to use Pack like an app.</p>
       <button class="secondary" id="out" style="margin-top:28px">Sign out</button>
     </main>${tabs("me")}`;
-    $("#nf").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const name = $("#dn").value.trim().slice(0, 60);
-      const { error } = await sb.from("profiles").update({ display_name: name }).eq("id", session.user.id);
-      if (error) return fail(error);
-      me.display_name = name; toast("Saved"); renderAccount();
-    });
-    $("#out").addEventListener("click", async () => {
-      for (const k of Object.keys(localStorage)) if (k.startsWith("pack2.") && k !== "pack2.cfg" && k !== "pack2.lastEmail") localStorage.removeItem(k);
-      history.replaceState(null, "", "#/");
-      await sb.auth.signOut();
-    });
+      $("#nf").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const name = $("#dn").value.trim().slice(0, 60);
+        const { error } = await sb.from("profiles").update({ display_name: name }).eq("id", session.user.id);
+        if (error) return fail(error);
+        me.display_name = name; toast("Saved"); renderAccount();
+      });
+      $("#out").addEventListener("click", async () => {
+        for (const k of Object.keys(localStorage)) if (k.startsWith("pack2.") && k !== "pack2.cfg" && k !== "pack2.lastEmail") localStorage.removeItem(k);
+        history.replaceState(null, "", "#/");
+        await sb.auth.signOut();
+      });
+    };
+    draw(store.get("myStats", null), store.get("isAdmin", false));
+    const [trips, inv, adminRes] = await Promise.all([
+      sb.from("trips").select("id,start_date,end_date,items(name,packed,kind),trip_members(user_id)").then(must),
+      sb.from("closet_items").select("purpose").eq("owner_id", session.user.id).then(must),
+      sb.rpc("is_admin"),
+    ]);
+    const t0 = today(), counts = new Map(), kinds = {};
+    let packed = 0, itemsN = 0;
+    for (const t of trips) for (const i of t.items || []) {
+      itemsN++; if (i.packed) packed++;
+      kinds[i.kind || "gear"] = (kinds[i.kind || "gear"] || 0) + 1;
+      const k = key(i.name); const c = counts.get(k) || [i.name, 0]; c[1]++; counts.set(k, c);
+    }
+    const st = {
+      trips: trips.length, upcoming: trips.filter((t) => !t.end_date || t.end_date >= t0).length,
+      days: trips.reduce((a, t) => a + tripDays(t), 0), packed, avg: trips.length ? Math.round(itemsN / trips.length) : 0,
+      shared: trips.filter((t) => (t.trip_members || []).length > 1).length,
+      top: [...counts.values()].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 8),
+      personal: inv.filter((i) => i.purpose !== "work").length, equipment: inv.filter((i) => i.purpose === "work").length, kinds,
+    };
+    const admin = !adminRes.error && adminRes.data === true;
+    store.set("myStats", st); store.set("isAdmin", admin);
+    if (location.hash === "#/account") draw(st, admin);
+  }
+
+  // ───────────────────────── admin ─────────────────────────
+  async function renderAdmin() {
+    app.innerHTML = header({ title: "Admin", back: "#/account", sub: "Pack usage across everyone" }) + `<main><p class="hint"><span class="spin"></span><span>Loading…</span></p></main>`;
+    const { data: a, error } = await sb.rpc("admin_stats");
+    if (error) { app.innerHTML = header({ title: "Admin", back: "#/account" }) + `<main><div class="empty"><strong>Admins only</strong>This page is only for Pack's owner.</div></main>`; return; }
+    const pct = (x, y) => (y ? Math.round((x / y) * 100) + "%" : "–");
+    const ago = (d) => { if (!d) return "never"; const n = Math.round((new Date(today() + "T12:00:00") - new Date(String(d).slice(0, 10) + "T12:00:00")) / 864e5); return n <= 0 ? "today" : n === 1 ? "yesterday" : `${n} days ago`; };
+    app.innerHTML = header({ title: "Admin", back: "#/account", sub: "Pack usage across everyone · updated just now" }) + `<main>
+      <h3 class="sec" style="margin-top:4px">People</h3>
+      <div class="stats">
+        ${stat(a.users, "accounts")}${stat(a.users_7d, "new this week")}${stat(a.active_1d, "active today")}
+        ${stat(a.active_7d, "active this week")}${stat(a.active_30d, "active this month")}${stat(pct(a.returning_users, a.users), "came back another day")}
+      </div>
+      <h3 class="sec">Trips &amp; packing</h3>
+      <div class="stats">
+        ${stat(a.trips, "trips")}${stat(a.trips_7d, "trips this week")}${stat(pct(a.repeat_planners, a.users), "planned 2+ trips")}
+        ${stat(a.shared_trips, "shared trips")}${stat(a.items, "items listed")}${stat(pct(a.items_packed, a.items), "items checked off")}
+        ${stat(a.inventory_items, "inventory items")}${stat(a.templates, "templates")}${stat(a.sorts_today + " / " + a.sorts_30d, "smart sorts today / 30d")}
+      </div>
+      <h3 class="sec">Last 30 days</h3>
+      ${barChart(a.daily, "active", "Active people", "var(--pine-2)")}
+      ${barChart(a.daily, "signups", "New sign-ups", "var(--amber)")}
+      ${barChart(a.daily, "trips", "Trips created", "var(--sky)")}
+      ${barChart(a.daily, "sorts", "Smart sorts (Claude)", "var(--ok)")}
+      <h3 class="sec">Everyone (${a.people.length})</h3>
+      <div class="card people">${a.people.map((p) => `<div class="row"><span class="nm">${esc(p.email)}<span class="note">Joined ${esc(fmtDate(String(p.joined).slice(0, 10)))} · active ${esc(ago(p.last_active))}${p.days_active > 1 ? ` · ${p.days_active} days` : ""}</span></span>
+        <span class="qty" title="Trips">${plural(p.trips, "trip")}</span><span class="qty" title="Smart sorts, last 30 days">${p.sorts_30d} sorts</span></div>`).join("")}</div>
+      <p class="hint" style="margin:12px 4px">“Active” means someone opened Pack that day. Days are in UTC. Only you can see this page.</p>
+    </main>`;
   }
 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
