@@ -80,23 +80,89 @@
     sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: "pkce" },
     });
-    const { data } = await sb.auth.getSession();
-    session = data.session;
-    sb.auth.onAuthStateChange((_ev, s) => {
+    const { data } = await sb.auth.getSession().catch(() => ({ data: {} }));
+    session = data?.session || null;
+    // Offline with an expired token: keep using the saved session so trips still open.
+    // Supabase refreshes it as soon as there's signal again.
+    if (!session && !navigator.onLine) session = savedSession();
+    sb.auth.onAuthStateChange((ev, s) => {
+      if (!s && ev !== "SIGNED_OUT" && !navigator.onLine) return;
       const was = !!session; session = s;
       if (!!s !== was) { me = null; route(); }
+      if (s) flush();
     });
     window.addEventListener("hashchange", route);
-    window.addEventListener("online", () => { $(".offline")?.remove(); route(); });
-    window.addEventListener("offline", () => { if (!$(".offline")) app.insertAdjacentHTML("afterbegin", '<div class="offline">Offline — showing what\'s saved on this device</div>'); });
+    window.addEventListener("online", () => { netbar(); flush().then(() => route()); });
+    window.addEventListener("offline", netbar);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") flush(); });
     route();
+    flush();
+  }
+
+  function savedSession() {
+    try {
+      const k = Object.keys(localStorage).find((x) => /^sb-.*-auth-token$/.test(x));
+      const s = k && JSON.parse(localStorage.getItem(k));
+      return s?.user?.id ? s : null;
+    } catch { return null; }
   }
 
   async function loadMe() {
     if (me || !session) return me;
-    const { data } = await sb.from("profiles").select("id,email,display_name").eq("id", session.user.id).maybeSingle();
-    me = data || { id: session.user.id, email: session.user.email, display_name: "" };
+    const { data } = await sb.from("profiles").select("id,email,display_name").eq("id", session.user.id).maybeSingle().catch(() => ({}));
+    me = data || store.get("me", null) || { id: session.user.id, email: session.user.email, display_name: "" };
+    if (data) store.set("me", data);
     return me;
+  }
+
+  // ───────────────────────── offline: outbox ─────────────────────────
+  // Changes to items save on the phone first when there's no signal, then sync in order.
+  let outbox = store.get("outbox", []);
+  const isNet = (err) => !navigator.onLine || /fetch|network|load failed|timed? ?out|offline|connection/i.test(String(err?.message || err || ""));
+  const newId = () => (crypto.randomUUID ? crypto.randomUUID() : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+  function netbar() {
+    const el = $("#netbar"); if (!el) return;
+    const n = outbox.length;
+    const text = !navigator.onLine ? `You're offline${n ? ` · ${n} change${n === 1 ? "" : "s"} saved on this phone` : " · changes will save on this phone"}`
+      : n ? `Syncing ${n} change${n === 1 ? "" : "s"}…` : "";
+    el.textContent = text; el.classList.toggle("hidden", !text);
+  }
+  function saveOutbox() { store.set("outbox", outbox); netbar(); }
+  function runOp(op) {
+    if (op.type === "insert") return sb.from(op.table).insert(op.rows);
+    let q = op.type === "update" ? sb.from(op.table).update(op.patch) : sb.from(op.table).delete();
+    for (const [k, v] of Object.entries(op.eq || {})) q = q.eq(k, v);
+    if (op.ids) q = q.in("id", op.ids);
+    return q;
+  }
+  async function write(op) {
+    if (!outbox.length && navigator.onLine) {
+      let error;
+      try { ({ error } = await runOp(op)); } catch (e) { error = e; }
+      if (!error) return { saved: true };
+      if (!isNet(error)) throw new Error(error.message || String(error));
+    }
+    outbox.push({ ...op, at: Date.now() }); saveOutbox();
+    return { queued: true };
+  }
+  let flushing = null;
+  function flush() {
+    if (flushing) return flushing;
+    if (!outbox.length || !navigator.onLine || !session || !sb) return Promise.resolve();
+    flushing = (async () => {
+      let done = 0, dropped = 0;
+      while (outbox.length && navigator.onLine) {
+        let error;
+        try { ({ error } = await runOp(outbox[0])); } catch (e) { error = e; }
+        if (error && isNet(error)) break;
+        error ? dropped++ : done++;   // a rejected change (e.g. the item was deleted elsewhere) is dropped
+        outbox.shift(); saveOutbox();
+      }
+      if (done) toast(`Synced ${done} change${done === 1 ? "" : "s"} you made offline`);
+      if (dropped) setTimeout(() => toast(`${dropped} offline change${dropped === 1 ? "" : "s"} couldn't be saved (the item may have been removed)`, 4500), done ? 3000 : 0);
+      if (done && T && location.hash === `#/trip/${T.trip.id}`) { const f = await fetchTrip(T.trip.id).catch(() => null); if (f) { T = f; cacheTrip(); drawTrip(); } }
+    })().finally(() => { flushing = null; netbar(); });
+    return flushing;
   }
 
   async function api(path, body) {
@@ -140,8 +206,13 @@
       if (view === "account") return await renderAccount();
       if (view === "admin") return await renderAdmin();
       return await renderHome();
-    } catch (e) { fail(e); }
+    } catch (e) {
+      if (!isNet(e)) return fail(e);
+      if (!$("main", app)) app.innerHTML = header({ title: "Pack" }) + `<main class="tabbed"><div class="empty"><strong>You're offline</strong>Open Pack once with signal and your trips will be saved on this phone for next time.</div></main>${tabs("trips")}`;
+      netbar();
+    }
   }
+  new MutationObserver(() => { if ($("#netbar") && $("#netbar").dataset.done !== "1") { $("#netbar").dataset.done = "1"; netbar(); } }).observe(app, { childList: true });
   const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
 
   function tabs(on) {
@@ -153,7 +224,7 @@
       ${back ? `<a class="icon-btn" href="${back}" aria-label="Back">${ICON.back}</a>` : ""}
       <h1>${esc(title)}</h1>
       ${more ? `<button class="icon-btn" id="moreBtn" aria-label="More">${ICON.more}</button>` : ""}
-    </div>${sub ? `<div class="sub">${sub}</div>` : ""}${progress != null ? `<div class="progress"><i style="width:${progress}%"></i></div>` : ""}</header>`;
+    </div>${sub ? `<div class="sub">${sub}</div>` : ""}${progress != null ? `<div class="progress"><i style="width:${progress}%"></i></div>` : ""}<div id="netbar" class="netbar hidden" role="status"></div></header>`;
 
   // ───────────────────────── sign in ─────────────────────────
   function renderSignIn(step = "email", email = store.get("lastEmail", "")) {
@@ -364,6 +435,16 @@
   }
 
   // Sort raw text with Claude and insert the results. If sorting fails, keep the raw lines so nothing is lost.
+  // Items that couldn't be sorted (offline, or out of smart sorts) go in "Unsorted" so nothing is lost.
+  async function addUnsorted(trip, text) {
+    const lines = text.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).slice(0, 200);
+    if (!lines.length) return;
+    const base = T && T.trip.id === trip.id ? T.items.length : 0;
+    const rows = lines.map((name, i) => ({ id: newId(), trip_id: trip.id, name: name.slice(0, 200), qty: "", note: "", category: "Unsorted", bag: "", kind: "gear", purpose: "personal", packed: false, packed_by: null, position: 1000 + base + i }));
+    if (T && T.trip.id === trip.id) { T.items.push(...rows.map((r) => ({ ...r, created_at: new Date().toISOString() }))); cacheTrip(); }
+    await write({ type: "insert", table: "items", rows: rows.map(({ packed_by, ...r }) => r) });
+  }
+
   async function sortInto(trip, text, existing, weather, workNames = new Set()) {
     let res;
     try {
@@ -374,14 +455,14 @@
         have: existing.map((i) => i.name),
       });
     } catch (e) {
-      const lines = text.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).slice(0, 200);
-      if (lines.length) must(await sb.from("items").insert(lines.map((name, i) => ({ trip_id: trip.id, name: name.slice(0, 200), category: "Unsorted", position: 1000 + i }))));
-      toast((e.status === 429 ? e.message : "Couldn't sort right now.") + " Your items were added unsorted.", 5000);
+      if (e.status === 401) throw e;
+      await addUnsorted(trip, text);
+      toast(isNet(e) ? "Added — Pack will sort them when you're back online." : (e.status === 429 ? e.message : "Couldn't sort right now.") + " Your items were added unsorted.", 5000);
       return;
     }
     const have = new Set(existing.map((i) => key(i.name)));
     const rows = res.items.filter((i) => !have.has(key(i.name)) && (have.add(key(i.name)), true))
-      .map((i, n) => ({ trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: workNames.has(key(i.name)) ? "work" : i.purpose || "personal", position: existing.length + n }));
+      .map((i, n) => ({ id: newId(), trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: workNames.has(key(i.name)) ? "work" : i.purpose || "personal", position: existing.length + n }));
     if (rows.length) must(await sb.from("items").insert(rows));
     const allNames = new Set([...have, ...rows.map((r) => key(r.name))]);
     const prev = Array.isArray(trip.suggestions) ? trip.suggestions : [];
@@ -400,9 +481,9 @@
   async function addToInventory(list) {
     const fresh = list.filter((i) => !inInventory(i));
     if (!fresh.length) return toast(list.length > 1 ? "Those are all in your inventory already" : "Already in your inventory");
-    const { error } = await sb.from("closet_items").insert(fresh.map((i) => ({ name: i.name, qty: i.qty, note: i.note, category: i.category, kind: kindOf(i), purpose: purposeOf(i), owner_id: session.user.id })));
-    if (error) return fail(error);
-    T.inventory = [...(T.inventory || []), ...fresh.map((i) => key(i.name))]; store.set("trip." + T.trip.id, T);
+    try { await write({ type: "insert", table: "closet_items", rows: fresh.map((i) => ({ id: newId(), name: i.name, qty: i.qty, note: i.note, category: i.category, kind: kindOf(i), purpose: purposeOf(i), owner_id: session.user.id })) }); }
+    catch (err) { return fail(err); }
+    T.inventory = [...(T.inventory || []), ...fresh.map((i) => key(i.name))]; cacheTrip();
     const skipped = list.length - fresh.length;
     toast(`${fresh.length === 1 && list.length === 1 ? "Added" : fresh.length + " added"} to your inventory${skipped ? ` (${skipped} already there)` : ""}`);
   }
@@ -419,7 +500,7 @@
     if (!trip) return null;
     const ids = members.map((m) => m.user_id);
     const profiles = ids.length ? must(await sb.from("profiles").select("id,email,display_name").in("id", ids)) : [];
-    return { trip, items, members, profiles, inventory: inv.map((i) => key(i.name)) };
+    return applyPending({ trip, items, members, profiles, inventory: inv.map((i) => key(i.name)) });
   }
 
   async function renderTrip(id) {
@@ -427,7 +508,7 @@
     if (cached) { T = cached; drawTrip(); }
     const fresh = await fetchTrip(id);
     if (!fresh) { store.set("trip." + id, null); toast("That trip isn't available."); return go("#/"); }
-    T = fresh; store.set("trip." + id, T); drawTrip();
+    T = fresh; cacheTrip(); drawTrip();
 
     const stale = !T.trip.weather || (Date.now() - new Date(T.trip.weather.fetched || 0) > 6 * 3600e3 && (!T.trip.end_date || T.trip.end_date >= today()));
     if (T.trip.destination && stale) getWeather(T.trip).then(() => { if (T?.trip.id === id) drawTrip(); }).catch(() => {});
@@ -441,10 +522,30 @@
     async function refresh() {
       if (location.hash !== `#/trip/${id}`) return;
       const f = await fetchTrip(id).catch(() => null);
-      if (f) { T = f; store.set("trip." + id, T); drawTrip(); }
+      if (f) { T = f; cacheTrip(); drawTrip(); }
     }
   }
 
+  // Fresh data from the server doesn't include changes still waiting to sync, so replay them on top.
+  function applyPending(t) {
+    for (const op of outbox) {
+      if (op.table !== "items") continue;
+      if (op.type === "insert") for (const r of op.rows) { if (r.trip_id === t.trip.id && !t.items.some((i) => i.id === r.id)) t.items.push({ packed: false, packed_by: null, ...r }); }
+      if (op.type === "update") t.items.forEach((i) => { if ((op.ids && op.ids.includes(i.id)) || (op.eq && op.eq.trip_id === t.trip.id)) Object.assign(i, op.patch); });
+      if (op.type === "delete" && op.ids) t.items = t.items.filter((i) => !op.ids.includes(i.id));
+    }
+    return t;
+  }
+  function cacheTrip() {
+    if (!T) return;
+    store.set("trip." + T.trip.id, T);
+    const list = store.get("trips", []) || [];
+    let row = list.find((x) => x.id === T.trip.id);
+    if (!row) { row = { id: T.trip.id }; list.push(row); }
+    Object.assign(row, { name: T.trip.name, destination: T.trip.destination, start_date: T.trip.start_date, end_date: T.trip.end_date, updated_at: T.trip.updated_at,
+      items: T.items.map((i) => ({ packed: i.packed, name: i.name, kind: i.kind })), trip_members: T.members.map((m) => ({ user_id: m.user_id })) });
+    store.set("trips", list);
+  }
   const profileOf = (uid) => T.profiles.find((p) => p.id === uid) || { id: uid, display_name: "Someone" };
 
   function drawTrip() {
@@ -506,7 +607,7 @@
       ${byBag && !trip.bags.length ? `<button class="card hintcard" id="addBagHint">No bags on this trip yet. <strong>Add bags →</strong></button>` : ""}
       ${view.purpose === "work" && !hasWork ? `<p class="hint" style="margin:0 4px 14px">Nothing is marked as work yet. Tap Select, choose items, then “Work / Personal”.</p>` : ""}
       ${sugg.length ? `<div class="sugg"><p>You might also want:</p><div class="chips">${sugg.map((s, i) => `<button class="chip dash" data-sug="${i}"><span>+ ${esc(s.name)}</span>${s.why ? `<small>${esc(s.why)}</small>` : ""}</button>`).join("")}</div></div>` : ""}
-      <div id="groups" class="${view.select ? "selecting" : ""}">${names.map((g) => `<section class="card cat"><h2>${esc(g || (byBag ? "No bag yet" : "Other"))} <span>${counts(g)}</span></h2>
+      <div id="groups" class="${view.select ? "selecting" : ""}">${names.map((g) => `<section class="card cat"><h2>${esc(g || (byBag ? "No bag yet" : "Other"))} ${!byBag && g === "Unsorted" && navigator.onLine ? `<button class="pill sortnow" id="sortNow">Sort these</button>` : ""}<span>${counts(g)}</span></h2>
         ${groups.get(g).map((i) => `<div class="item${i.packed ? " on" : ""}${view.picked.has(i.id) ? " picked" : ""}" data-id="${i.id}">
           ${view.select
             ? `<button class="tick" data-pick="${i.id}" role="checkbox" aria-checked="${view.picked.has(i.id)}" aria-label="Select ${esc(i.name)}"><span class="box round">${ICON.check}</span></button>`
@@ -537,6 +638,7 @@
     $$("[data-kind]").forEach((b) => b.addEventListener("click", () => { view.kind = b.dataset.kind; drawTrip(); }));
     $$("[data-purpose]").forEach((b) => b.addEventListener("click", () => { view.purpose = b.dataset.purpose; store.set("purpose", view.purpose); drawTrip(); }));
     $("#hideBtn").addEventListener("click", () => { view.hide = !view.hide; drawTrip(); });
+    $("#sortNow")?.addEventListener("click", (e) => { busy(e.currentTarget, true); sortUnsorted(); });
     $("#selBtn").addEventListener("click", () => { view.select = !view.select; view.picked.clear(); drawTrip(); });
     $("#addBagHint")?.addEventListener("click", () => newBag().then((b) => b && drawTrip()));
     $("#selAll")?.addEventListener("click", () => {
@@ -563,8 +665,9 @@
         it.packed = !it.packed; it.packed_by = it.packed ? session.user.id : null;
         if (navigator.vibrate) navigator.vibrate(8);
         drawTrip();
-        const { error } = await sb.from("items").update({ packed: it.packed, packed_by: it.packed_by }).eq("id", it.id);
-        if (error) { it.packed = !it.packed; drawTrip(); fail(error); } else store.set("trip." + T.trip.id, T);
+        cacheTrip();
+        try { await write({ type: "update", table: "items", ids: [it.id], patch: { packed: it.packed, packed_by: it.packed_by } }); }
+        catch (err) { it.packed = !it.packed; cacheTrip(); drawTrip(); fail(err); }
         return;
       }
       const ed = e.target.closest("[data-edit]");
@@ -588,9 +691,9 @@
     const before = T.items.filter((i) => set.has(i.id)).map((i) => ({ ...i }));
     T.items.forEach((i) => { if (set.has(i.id)) Object.assign(i, patch); });
     view.picked.clear(); view.select = false; drawTrip();
-    const { error } = await sb.from("items").update(patch).in("id", ids);
-    if (error) { before.forEach((b) => Object.assign(T.items.find((i) => i.id === b.id) || {}, b)); drawTrip(); return fail(error); }
-    store.set("trip." + T.trip.id, T);
+    cacheTrip();
+    try { await write({ type: "update", table: "items", ids, patch }); }
+    catch (err) { before.forEach((b) => Object.assign(T.items.find((i) => i.id === b.id) || {}, b)); cacheTrip(); drawTrip(); return fail(err); }
     if (ids.length > 1) toast(`${ids.length} items ${label}`);
   }
   async function newBag() {
@@ -631,10 +734,42 @@
   async function addText(text) {
     const btn = $("#addBtn"); busy(btn, true);
     try {
+      if (!navigator.onLine || outbox.length) {
+        await addUnsorted(T.trip, text);
+        if (!navigator.onLine) toast("Added — Pack will sort them when you're back online.");
+        else flush();
+        drawTrip(); return true;
+      }
       await sortInto(T.trip, text, T.items, null);
-      const f = await fetchTrip(T.trip.id); if (f) { T = f; store.set("trip." + T.trip.id, T); }
+      const f = await fetchTrip(T.trip.id).catch(() => null); if (f) { T = f; cacheTrip(); }
       drawTrip(); return true;
     } catch (e) { busy(btn, false); fail(e); return false; }
+  }
+
+  // Sort the items that were added offline (or when sorting was unavailable)
+  async function sortUnsorted() {
+    const loose = T.items.filter((i) => i.category === "Unsorted");
+    if (!loose.length || !navigator.onLine) return;
+    await flush();
+    const keep = T.items.filter((i) => i.category !== "Unsorted");
+    let res;
+    try {
+      res = await api("/api/sort", {
+        items: loose.map((i) => (i.qty ? `${i.name} (${i.qty})` : i.name)).join("\n"), mode: "trip",
+        trip: { name: T.trip.name, destination: T.trip.destination, start: T.trip.start_date, end: T.trip.end_date, details: T.trip.details, bags: T.trip.bags, weather: T.trip.weather?.summary || "" },
+        categories: [...new Set(keep.map((i) => i.category))], have: keep.map((i) => i.name),
+      });
+    } catch (e) { return fail(e); }
+    // Match sorted results back to the loose items by name; keep their packed state.
+    const byName = new Map(res.items.map((r) => [key(r.name), r]));
+    for (const it of loose) {
+      const r = byName.get(key(it.name)) || res.items.find((x) => key(it.name).includes(key(x.name)) || key(x.name).includes(key(it.name)));
+      if (!r) continue;
+      const patch = { name: r.name, qty: r.qty || it.qty, category: r.category || "Other", bag: r.bag || it.bag, kind: r.kind || it.kind, purpose: r.purpose || it.purpose };
+      Object.assign(it, patch);
+      await write({ type: "update", table: "items", ids: [it.id], patch }).catch(() => {});
+    }
+    cacheTrip(); drawTrip(); toast("Sorted");
   }
 
   function editItem(it) {
@@ -665,12 +800,12 @@
       e.preventDefault();
       const patch = { name: $("#en").value.trim(), qty: $("#eq").value.trim(), category: $("#ec").value.trim() || "Other", note: $("#eo").value.trim(),
         bag: $("#eb").value === "__new" ? it.bag : $("#eb").value, kind: $("#ek .on")?.dataset.k || kindOf(it), purpose: $("#ep .on")?.dataset.k || purposeOf(it) };
-      closeSheet(); Object.assign(it, patch); drawTrip();
-      const { error } = await sb.from("items").update(patch).eq("id", it.id); if (error) fail(error);
+      closeSheet(); Object.assign(it, patch); cacheTrip(); drawTrip();
+      write({ type: "update", table: "items", ids: [it.id], patch }).catch(fail);
     });
     $("#del").addEventListener("click", async () => {
-      closeSheet(); T.items = T.items.filter((x) => x !== it); drawTrip();
-      const { error } = await sb.from("items").delete().eq("id", it.id); if (error) fail(error);
+      closeSheet(); T.items = T.items.filter((x) => x !== it); cacheTrip(); drawTrip();
+      write({ type: "delete", table: "items", ids: [it.id] }).catch(fail);
     });
     $("#toCloset")?.addEventListener("click", async () => { closeSheet(); await addToInventory([it]); });
   }
@@ -735,8 +870,8 @@
           try { await navigator.clipboard.writeText(txt); toast("Copied"); } catch { toast("Couldn't copy on this device"); }
         }
         if (a === "reset" && confirm("Uncheck every item?")) {
-          T.items.forEach((i) => { i.packed = false; i.packed_by = null; }); drawTrip();
-          must(await sb.from("items").update({ packed: false, packed_by: null }).eq("trip_id", id));
+          T.items.forEach((i) => { i.packed = false; i.packed_by = null; }); cacheTrip(); drawTrip();
+          await write({ type: "update", table: "items", eq: { trip_id: id }, patch: { packed: false, packed_by: null } });
         }
         if (a === "delete" && confirm(`Delete “${T.trip.name}” for everyone on it?`)) {
           must(await sb.from("trips").delete().eq("id", id)); store.set("trip." + id, null); toast("Trip deleted"); go("#/");
