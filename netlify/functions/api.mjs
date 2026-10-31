@@ -11,8 +11,10 @@
 //   PACK_DAILY_LIMIT       optional, AI sorts per person per day (default 25)
 //   PACK_SITE_DAILY_LIMIT  optional, AI sorts for everyone combined per day (default 1000)
 
+import { buildReminder, sendEmail } from "../lib/reminder-email.mjs";
+
 export const config = {
-  path: ["/api/config", "/api/weather", "/api/sort"],
+  path: ["/api/config", "/api/weather", "/api/sort", "/api/test-reminder"],
   rateLimit: { windowLimit: 30, windowSize: 60, aggregateBy: ["ip", "domain"] },
 };
 
@@ -144,6 +146,7 @@ const SORT_TOOL = {
             category: { type: "string", description: "Short category, e.g. Documents, Clothes, Toiletries, Tech, Health" },
             bag: { type: "string", description: "One of the listed bags, or empty if no bags were listed" },
             kind: { type: "string", enum: ["clothes", "gear", "essentials"], description: "clothes = anything worn (incl. shoes, accessories); essentials = documents, money, toiletries, meds; gear = everything else (tech, equipment, tools, bags, books)" },
+            last: { type: "boolean", description: "true only for things used right up until leaving, packed at the last minute (phone charger, toothbrush, daily meds, glasses, keys, wallet)" },
             purpose: { type: "string", enum: ["personal", "work"], description: "work = needed for the job or work purpose of the trip (e.g. camera kit for a shoot, laptop for a conference); otherwise personal" },
           },
           required: ["name", "category", "kind", "purpose"],
@@ -226,10 +229,35 @@ async function sort(req) {
     category: clip(i.category, 40) || "Other",
     kind: ["clothes", "gear", "essentials"].includes(i.kind) ? i.kind : "gear",
     purpose: i.purpose === "work" ? "work" : "personal",
+    last: i.last === true,
     bag: bagSet.has(String(i.bag || "").toLowerCase()) ? bags.find((b) => b.toLowerCase() === String(i.bag).toLowerCase()) : "",
   })).filter((i) => i.name);
   const sugg = mode === "trip" ? (out.suggestions || []).slice(0, 6).map((s) => ({ name: clip(s.name, 80), why: clip(s.why, 80) })).filter((s) => s.name) : [];
   return json({ items: clean, suggestions: sugg, remaining: Math.max(0, limit - used) });
+}
+
+// Admins only: send yourself a sample day-before reminder for your next trip.
+async function testReminder(req) {
+  const user = await currentUser(req);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  const asUser = (path, init = {}) => fetch(`${env("SUPABASE_URL")}/rest/v1/${path}`, { ...init, headers: { apikey: env("SUPABASE_ANON_KEY"), authorization: `Bearer ${token}`, "content-type": "application/json", ...(init.headers || {}) } }).then((r) => r.json());
+  if ((await asUser("rpc/is_admin", { method: "POST", body: "{}" })) !== true) return json({ error: "Admins only" }, 403);
+  if (!env("RESEND_API_KEY")) return json({ error: "Add RESEND_API_KEY in Netlify first." }, 503);
+  const trips = await asUser(`trips?select=id,name,destination,start_date,end_date,weather,items(name,packed,pack_last,assigned_to)&order=start_date.asc.nullslast&limit=20`);
+  const t = (Array.isArray(trips) ? trips : []).find((x) => !x.start_date || x.start_date >= new Date().toISOString().slice(0, 10)) || (Array.isArray(trips) ? trips[0] : null);
+  const items = t?.items || [];
+  const r = {
+    trip_id: t?.id || "", trip_name: t?.name || "Sample trip", destination: t?.destination || "Big Sur, CA",
+    start_date: t?.start_date || new Date(Date.now() + 864e5).toISOString().slice(0, 10), display_name: user.user_metadata?.full_name || "",
+    weather_summary: t?.weather?.summary || "", items_total: items.length || 12, items_left: t ? items.filter((i) => !i.packed).length : 5,
+    mine_left: items.filter((i) => !i.packed && i.assigned_to === user.id).length,
+    pack_last: t ? items.filter((i) => i.pack_last && !i.packed).map((i) => i.name).slice(0, 12) : ["Phone charger", "Toothbrush"],
+  };
+  const mail = buildReminder(r);
+  try { await sendEmail({ to: user.email, ...mail, subject: "[Test] " + mail.subject }); }
+  catch (e) { return json({ error: "Couldn't send: " + e.message }, 502); }
+  return json({ ok: true, to: user.email });
 }
 
 // ───────────────────────── router ─────────────────────────
@@ -248,6 +276,7 @@ export default async (req) => {
       return json(w, w.error ? 422 : 200);
     }
     if (path === "/api/sort") return await sort(req);
+    if (path === "/api/test-reminder") return await testReminder(req);
     return json({ error: "Not found" }, 404);
   } catch (err) {
     console.error(err); return json({ error: "Something went wrong. Try again." }, 500);

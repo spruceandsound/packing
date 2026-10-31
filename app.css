@@ -299,3 +299,32 @@ a.pill{color:inherit}
 
 .lp-feats{grid-template-columns:repeat(3,1fr)}
 .lp-feat.lp-big{grid-column:span 1}
+
+/* trip sections, people, pack last, ledger */
+.triptabs{display:flex;background:var(--sunk);border-radius:12px;padding:4px;margin-bottom:14px;gap:4px}
+.triptabs a{flex:1;text-align:center;padding:10px 8px;border-radius:9px;text-decoration:none;color:var(--muted);font-weight:650;font-size:15px}
+.triptabs a.on{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.triptabs small{font-weight:600;color:var(--ok)}
+.av.sm{width:22px;height:22px;font-size:10px;border-width:1.5px;margin-right:6px}
+.av.who{outline:2px solid var(--amber);outline-offset:-1px}
+.lastcat{border-color:color-mix(in srgb,var(--amber) 60%,var(--line))}
+.lastcat h2{color:var(--amber-ink)}
+.lasthint{margin:-4px 16px 8px;font-size:13px;color:var(--muted)}
+.lasttag{flex:none;font-size:12px;font-weight:650;color:var(--amber-ink);border:1px solid color-mix(in srgb,var(--amber) 50%,transparent);border-radius:99px;padding:1px 8px}
+.selgrid{max-width:760px;width:100%;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.add .selgrid .selact{padding:11px 4px;font-size:14px}
+.balance{padding:4px 0;margin-bottom:6px}
+.balance .bal-head{padding:12px 16px;font-size:17px}
+.balance.plus .bal-head b{color:var(--ok)}
+.balance.minus .bal-head b{color:var(--err)}
+.balance .row .nm b{white-space:nowrap}
+.balance .avs .av{width:26px;height:26px;font-size:11px}
+.expense{margin-bottom:10px;overflow:hidden}
+.exp-main{display:flex;gap:12px;align-items:center;width:100%;border:0;background:none;text-align:left;padding:14px 16px;font:inherit;color:inherit}
+.exp-main .amt{font-size:18px;font-variant-numeric:tabular-nums}
+.shares{display:flex;flex-wrap:wrap;gap:6px;padding:0 16px 14px}
+.share{display:inline-flex;align-items:center;border:1px solid var(--line);background:var(--bg);border-radius:99px;padding:3px 10px 3px 3px;font-size:13.5px;color:var(--ink);font-family:inherit}
+.share.self{color:var(--muted);border-style:dashed}
+button.share{cursor:pointer;border-color:color-mix(in srgb,var(--err) 40%,var(--line))}
+button.share.paid{border-color:color-mix(in srgb,var(--ok) 50%,var(--line));color:var(--ok);background:color-mix(in srgb,var(--ok) 8%,var(--bg))}
+.add .primary{padding:14px;min-width:0;display:flex;font-size:17px;width:100%}

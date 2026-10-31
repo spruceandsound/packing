@@ -18,6 +18,10 @@
   const fmtDate = (d, o = { month: "short", day: "numeric" }) => d ? new Date(d + "T12:00:00").toLocaleDateString(undefined, o) : "";
   const dateRange = (a, b) => !a ? "" : !b || a === b ? fmtDate(a) : `${fmtDate(a)} – ${fmtDate(b)}`;
   const today = () => new Date().toISOString().slice(0, 10);
+  const CURRENCIES = ["USD", "CAD", "EUR", "GBP", "MXN", "AUD", "NZD", "JPY", "CHF", "SEK", "NOK", "DKK", "ISK", "THB", "SGD", "HKD", "KRW", "INR", "BRL", "ZAR"];
+  const curDigits = (c) => { try { return new Intl.NumberFormat("en", { style: "currency", currency: c || "USD" }).resolvedOptions().maximumFractionDigits; } catch { return 2; } };
+  const money = (cents, c = "USD") => { const d = curDigits(c); try { return new Intl.NumberFormat(undefined, { style: "currency", currency: c || "USD", minimumFractionDigits: d === 0 ? 0 : (cents % 10 ** d ? d : 0), maximumFractionDigits: d }).format(cents / 10 ** d); } catch { return (cents / 100).toFixed(2); } };
+  const parseMoney = (str, c = "USD") => { const v = parseFloat(String(str || "").replace(/[^0-9.,-]/g, "").replace(/,(?=\d{1,2}$)/, ".").replace(/,/g, "")); return Number.isFinite(v) && v > 0 ? Math.round(v * 10 ** curDigits(c)) : 0; };
   const COLORS = ["#2F7A5B", "#3E6E8E", "#9A5B2F", "#7A4E8C", "#B0533F", "#4F6B2F", "#2F5E7A"];
   const colorFor = (id) => COLORS[[...String(id)].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
   const initials = (p) => (p?.display_name || p?.email || "?").replace(/@.*/, "").split(/[\s._-]+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
@@ -109,9 +113,11 @@
 
   async function loadMe() {
     if (me || !session) return me;
-    const { data } = await sb.from("profiles").select("id,email,display_name").eq("id", session.user.id).maybeSingle().catch(() => ({}));
+    const { data } = await sb.from("profiles").select("id,email,display_name,timezone,reminders").eq("id", session.user.id).maybeSingle().catch(() => ({}));
     me = data || store.get("me", null) || { id: session.user.id, email: session.user.email, display_name: "" };
     if (data) store.set("me", data);
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (data && tz && data.timezone !== tz) sb.from("profiles").update({ timezone: tz }).eq("id", session.user.id).then(() => {});
     return me;
   }
 
@@ -190,7 +196,7 @@
     const [view, id, sub] = h.split("/");
     if (view === "join" && id) store.set(pendingJoinKey, id);
     if (!session) {
-      if ($(".auth #email, .auth #code")) return;
+      if ($(".auth #email, .auth #code") && view !== "join") return;
       if (view === "signin" || store.get(pendingJoinKey, null)) return renderSignIn();
       return renderLanding();
     }
@@ -204,6 +210,7 @@
     if (join) return acceptInvite(join);
     try {
       if (view === "trip" && id && sub === "edit") return await renderTripForm(id);
+      if (view === "trip" && id && sub === "expenses") return await renderExpenses(id);
       if (view === "trip" && id) return await renderTrip(id);
       if (view === "new") return await renderTripForm(null, id);
       if (view === "inventory" || view === "closet") return await renderCloset();
@@ -275,6 +282,18 @@
           <p>Keep personal items and work equipment in one place. Mark the things you never travel without as <b>Always</b>, and they're on every new trip automatically. Heading to a shoot? “Bring my equipment” adds your whole kit in one tap.</p></div>
       </div></section>
 
+      <section class="lp-section lp-alt"><div class="lp-wrap lp-show">
+        <div class="lp-phone"><img src="/img/ledger.webp" alt="Trip expenses for three friends: trip total, your share, and who owes whom with Paid back buttons" width="780" height="1333" loading="lazy"></div>
+        <div><p class="lp-eyebrow">Split the costs</p><h2>Who paid for what, settled</h2>
+          <p>You got coffee, they got the campsite. Log it in a few taps and Pack keeps a running tally of who owes whom. Split evenly or not, mark shares paid back as they come in, and settle up in one tap at the end.</p></div>
+      </div></section>
+
+      <section class="lp-section"><div class="lp-wrap lp-show lp-flip">
+        <div class="lp-phone"><img src="/img/people.webp" alt="A shared trip grouped by person: what you're bringing, what Sam is bringing and what anyone can bring, with a Pack last section at the top" width="780" height="1333" loading="lazy"></div>
+        <div><p class="lp-eyebrow">Traveling together</p><h2>Who's bringing what, sorted</h2>
+          <p>Share a trip with one link. Assign the tent to Sam and the cooler to Jordan, then flip to <b>Mine</b> to see just your own list. Check-offs show up live on everyone's phone, and the things you'll use until the last second wait in their own <b>Pack last</b> list.</p></div>
+      </div></section>
+
       <section class="lp-section lp-alt"><div class="lp-wrap">
         <h2>Everything a trip needs</h2>
         <div class="lp-feats">
@@ -299,7 +318,7 @@
         <a class="lp-btn" href="#/signin">Start packing</a>
       </div></section>
 
-      <footer class="lp-foot"><div class="lp-wrap">Made by <a href="https://spruceandsound.com">Spruce &amp; Sound</a> · © ${new Date().getFullYear()}</div></footer>
+      <footer class="lp-foot"><div class="lp-wrap">Made by <a href="https://spruceandsound.com/studio">Spruce &amp; Sound</a> · © ${new Date().getFullYear()}</div></footer>
     </div>`;
     $("#howLink").addEventListener("click", (e) => { e.preventDefault(); $("#how").scrollIntoView({ behavior: "smooth" }); });
   }
@@ -438,6 +457,8 @@
         </div>
         <label class="f" for="details">What's the trip? <small>(optional)</small></label>
         <input class="t" id="details" value="${esc(trip.details || "")}" placeholder="Shooting a wedding, one nice dinner, a hike" maxlength="1000">
+        <label class="f" for="cur">Currency <small>(for splitting costs)</small></label>
+        <select class="t" id="cur">${[...new Set([trip.currency || "USD", ...CURRENCIES])].map((c) => `<option${c === (trip.currency || "USD") ? " selected" : ""}>${c}</option>`).join("")}</select>
         <label class="f">Bags <small>(optional — Pack assigns each item to one)</small></label>
         <div class="chips" id="bags"></div>
         ${editing ? "" : `
@@ -477,7 +498,7 @@
       const row = {
         name: $("#name").value.trim(), destination: $("#dest").value.trim() || null,
         start_date: $("#start").value || null, end_date: $("#end").value || $("#start").value || null,
-        details: $("#details").value.trim() || null, bags,
+        details: $("#details").value.trim() || null, bags, currency: $("#cur").value || "USD",
       };
       if (row.end_date && row.start_date && row.end_date < row.start_date) return toast("Return date is before the leave date.");
       try {
@@ -541,7 +562,7 @@
     }
     const have = new Set(existing.map((i) => key(i.name)));
     const rows = res.items.filter((i) => !have.has(key(i.name)) && (have.add(key(i.name)), true))
-      .map((i, n) => ({ id: newId(), trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: workNames.has(key(i.name)) ? "work" : i.purpose || "personal", position: existing.length + n }));
+      .map((i, n) => ({ id: newId(), trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: workNames.has(key(i.name)) ? "work" : i.purpose || "personal", pack_last: !!i.last, position: existing.length + n }));
     if (rows.length) must(await sb.from("items").insert(rows));
     const allNames = new Set([...have, ...rows.map((r) => key(r.name))]);
     const prev = Array.isArray(trip.suggestions) ? trip.suggestions : [];
@@ -552,7 +573,9 @@
   }
 
   // ───────────────────────── one trip ─────────────────────────
-  const view = { group: store.get("group", "category"), hide: false, kind: "all", purpose: store.get("purpose", "all"), select: false, picked: new Set() };
+  const view = { group: store.get("group", "category"), hide: false, kind: "all", purpose: store.get("purpose", "all"), who: store.get("who", "all"), select: false, picked: new Set() };
+  const LAST = "\u0000last";
+  const nameOf = (uid) => uid === session.user.id ? "You" : (profileOf(uid).display_name || profileOf(uid).email || "Someone");
   const KINDS = [["clothes", "Clothes"], ["gear", "Gear"], ["essentials", "Essentials"]];
   const kindOf = (i) => i.kind || "gear";
   const purposeOf = (i) => i.purpose || "personal";
@@ -627,26 +650,37 @@
   }
   const profileOf = (uid) => T.profiles.find((p) => p.id === uid) || { id: uid, display_name: "Someone" };
 
+  function tripTabs(on) {
+    const id = T.trip.id;
+    const spent = T.expensesTotal ?? ((store.get("exp." + id, null)?.expenses || []).reduce((x, e) => x + e.amount_cents, 0));
+    return `<nav class="triptabs" aria-label="Trip sections">
+      <a href="#/trip/${id}" class="${on === "packing" ? "on" : ""}">Packing</a>
+      <a href="#/trip/${id}/expenses" class="${on === "expenses" ? "on" : ""}">Expenses${spent ? ` <small>${esc(money(spent, T.trip.currency))}</small>` : ""}</a></nav>`;
+  }
+
   function drawTrip() {
     const { trip, items } = T;
     const p = items.filter((i) => i.packed).length, n = items.length;
     const shared = T.members.length > 1;
     const byBag = view.group === "bag";
+    const byPerson = view.group === "person" && shared;
     const scrollY = window.scrollY;
     const hasWork = items.some((i) => purposeOf(i) === "work");
-    const inPurpose = items.filter((i) => view.purpose === "all" || purposeOf(i) === view.purpose);
+    const whoOk = (i) => !shared || view.who === "all" || (view.who === "mine" ? i.assigned_to === session.user.id : !i.assigned_to);
+    const inPurpose = items.filter((i) => (view.purpose === "all" || purposeOf(i) === view.purpose) && whoOk(i));
     const shown = inPurpose.filter((i) => view.kind === "all" || kindOf(i) === view.kind);
 
-    const groupOf = (i) => byBag ? bagOf(i) : i.category || "Other";
+    const groupOf = (i) => (!byBag && i.pack_last) ? LAST : byBag ? bagOf(i) : byPerson ? (i.assigned_to || "") : i.category || "Other";
     const groups = new Map();
-    const order = byBag ? [...trip.bags, ""] : [];
+    const order = byBag ? [...trip.bags, ""] : byPerson ? [LAST, session.user.id, ...T.members.map((m) => m.user_id).filter((u) => u !== session.user.id), ""] : [];
     for (const i of shown) {
       if (view.hide && i.packed && !view.select) continue;
       const g = groupOf(i);
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g).push(i);
     }
-    const names = byBag ? order.filter((g) => groups.has(g)) : [...groups.keys()];
+    const names = byBag || byPerson ? order.filter((g) => groups.has(g)) : [...(groups.has(LAST) ? [LAST] : []), ...[...groups.keys()].filter((g) => g !== LAST)];
+    const groupLabel = (g) => g === LAST ? "⏰ Pack last" : byBag ? (g || "No bag yet") : byPerson ? (g ? (g === session.user.id ? "You're bringing" : `${nameOf(g)} is bringing`) : "Anyone can bring") : g || "Other";
     const counts = (g) => { const all = shown.filter((i) => groupOf(i) === g); return `${all.filter((i) => i.packed).length}/${all.length}`; };
     const kindCount = (k) => inPurpose.filter((i) => k === "all" || kindOf(i) === k).length;
 
@@ -672,12 +706,15 @@
         <span class="grow muted" style="font-size:14px">${shared ? `Packing with ${T.members.length - 1} other${T.members.length > 2 ? "s" : ""}` : "Just you"}</span>
         <button class="pill" id="shareBtn">Share</button>
       </div>
+      ${tripTabs("packing")}
+      ${shared ? `<div class="seg wide" role="group" aria-label="Whose items" style="margin-bottom:12px">${[["all", "Everyone"], ["mine", "Mine"], ["open", "Unclaimed"]].map(([k, l]) =>
+        `<button class="${view.who === k ? "on" : ""}" data-who="${k}">${l} <small>${items.filter((i) => k === "all" || (k === "mine" ? i.assigned_to === session.user.id : !i.assigned_to)).length}</small></button>`).join("")}</div>` : ""}
       <div class="filters" role="group" aria-label="Show">
         ${[["all", "All"], ...KINDS].map(([k, label]) => `<button class="${view.kind === k ? "on" : ""}" data-kind="${k}">${label} <small>${kindCount(k)}</small></button>`).join("")}
       </div>
       <div class="toolbar">
         <div class="seg" role="group" aria-label="Work or personal">${[["all", "Both"], ["personal", "Personal"], ["work", "Work"]].map(([k, l]) => `<button class="${view.purpose === k ? "on" : ""}" data-purpose="${k}">${l}</button>`).join("")}</div>
-        <div class="seg" role="group" aria-label="Group by"><button class="${!byBag ? "on" : ""}" data-group="category">Category</button><button class="${byBag ? "on" : ""}" data-group="bag">Bag</button></div>
+        <div class="seg" role="group" aria-label="Group by"><button class="${!byBag && !byPerson ? "on" : ""}" data-group="category">Category</button><button class="${byBag ? "on" : ""}" data-group="bag">Bag</button>${shared ? `<button class="${byPerson ? "on" : ""}" data-group="person">Person</button>` : ""}</div>
       </div>
       <div class="toolbar">
         <button class="pill ${view.hide ? "on" : ""}" id="hideBtn">Hide packed</button><span class="spacer"></span>
@@ -686,7 +723,7 @@
       ${byBag && !trip.bags.length ? `<button class="card hintcard" id="addBagHint">No bags on this trip yet. <strong>Add bags →</strong></button>` : ""}
       ${view.purpose === "work" && !hasWork ? `<p class="hint" style="margin:0 4px 14px">Nothing is marked as work yet. Tap Select, choose items, then “Work / Personal”.</p>` : ""}
       ${sugg.length ? `<div class="sugg"><p>You might also want:</p><div class="chips">${sugg.map((s, i) => `<button class="chip dash" data-sug="${i}"><span>+ ${esc(s.name)}</span>${s.why ? `<small>${esc(s.why)}</small>` : ""}</button>`).join("")}</div></div>` : ""}
-      <div id="groups" class="${view.select ? "selecting" : ""}">${names.map((g) => `<section class="card cat"><h2>${esc(g || (byBag ? "No bag yet" : "Other"))} ${!byBag && g === "Unsorted" && navigator.onLine ? `<button class="pill sortnow" id="sortNow">Sort these</button>` : ""}<span>${counts(g)}</span></h2>
+      <div id="groups" class="${view.select ? "selecting" : ""}">${names.map((g) => `<section class="card cat${g === LAST ? " lastcat" : ""}"><h2>${esc(groupLabel(g))} ${!byBag && g === "Unsorted" && navigator.onLine ? `<button class="pill sortnow" id="sortNow">Sort these</button>` : ""}<span>${counts(g)}</span></h2>${g === LAST ? `<p class="lasthint">Things you'll use until you walk out the door.</p>` : ""}
         ${groups.get(g).map((i) => `<div class="item${i.packed ? " on" : ""}${view.picked.has(i.id) ? " picked" : ""}" data-id="${i.id}">
           ${view.select
             ? `<button class="tick" data-pick="${i.id}" role="checkbox" aria-checked="${view.picked.has(i.id)}" aria-label="Select ${esc(i.name)}"><span class="box round">${ICON.check}</span></button>`
@@ -695,7 +732,8 @@
             ${i.qty ? `<span class="qty">${esc(i.qty)}</span>` : ""}
             ${purposeOf(i) === "work" && view.purpose !== "work" ? `<span class="worktag">Work</span>` : ""}
             ${byBag ? `<span class="cattag">${esc(i.category)}</span>` : ""}
-            ${shared && i.packed && i.packed_by && i.packed_by !== session.user.id ? avatar(profileOf(i.packed_by), "by") : ""}
+            ${byBag && i.pack_last ? `<span class="lasttag">Last</span>` : ""}
+            ${shared && i.assigned_to && !byPerson ? avatar(profileOf(i.assigned_to), "by who") : shared && i.packed && i.packed_by && i.packed_by !== session.user.id ? avatar(profileOf(i.packed_by), "by") : ""}
           </button>
           ${!byBag && !view.select ? `<button class="bagtag${i.bag ? "" : " empty"}" data-bag="${i.id}" aria-label="Bag for ${esc(i.name)}">${i.bag ? esc(i.bag) : "+ Bag"}</button>` : ""}
         </div>`).join("")}</section>`).join("") ||
@@ -704,18 +742,17 @@
     ${view.select
       ? `<div class="add selbar"><div class="selrow"><span class="muted" style="font-size:14px">${view.picked.size ? `${view.picked.size} selected` : "Tap items to select"}</span>
           <button class="pill" id="selAll">${view.picked.size === shown.length && shown.length ? "None" : "All"}</button></div>
-        <div class="selrow">
-          <button class="selact" data-act="bag" ${view.picked.size ? "" : "disabled"}>Move to bag</button>
-          <button class="selact" data-act="kind" ${view.picked.size ? "" : "disabled"}>Type</button>
-          <button class="selact" data-act="purpose" ${view.picked.size ? "" : "disabled"}>Work / Personal</button>
-        </div>
-        <div class="selrow"><button class="selact alt" data-act="inv" ${view.picked.size ? "" : "disabled"}>Add to inventory</button></div></div>`
+        <div class="selgrid">
+          ${[["bag", "Move to bag"], ...(shared ? [["who", "Assign"]] : []), ["last", "Pack last"], ["kind", "Type"], ["purpose", "Work / Personal"], ["inv", "To inventory"]]
+            .map(([a, l]) => `<button class="selact${a === "inv" ? " alt" : ""}" data-act="${a}" ${view.picked.size ? "" : "disabled"}>${l}</button>`).join("")}
+        </div></div>`
       : `<div class="add"><form id="addForm"><input class="t" id="addInput" placeholder="Add items… (any format)" autocomplete="off" enterkeyhint="send"><button type="submit" id="addBtn">Add</button></form></div>`}`;
     window.scrollTo(0, scrollY);
 
     $$("[data-group]").forEach((b) => b.addEventListener("click", () => { view.group = b.dataset.group; store.set("group", view.group); drawTrip(); }));
     $$("[data-kind]").forEach((b) => b.addEventListener("click", () => { view.kind = b.dataset.kind; drawTrip(); }));
     $$("[data-purpose]").forEach((b) => b.addEventListener("click", () => { view.purpose = b.dataset.purpose; store.set("purpose", view.purpose); drawTrip(); }));
+    $$("[data-who]").forEach((b) => b.addEventListener("click", () => { view.who = b.dataset.who; store.set("who", view.who); drawTrip(); }));
     $("#hideBtn").addEventListener("click", () => { view.hide = !view.hide; drawTrip(); });
     $("#sortNow")?.addEventListener("click", (e) => { busy(e.currentTarget, true); sortUnsorted(); });
     $("#selBtn").addEventListener("click", () => { view.select = !view.select; view.picked.clear(); drawTrip(); });
@@ -729,6 +766,8 @@
       if (b.dataset.act === "bag") pickBag(ids);
       if (b.dataset.act === "kind") pickKind(ids);
       if (b.dataset.act === "purpose") pickPurpose(ids);
+      if (b.dataset.act === "who") pickPerson(ids);
+      if (b.dataset.act === "last") { const allLast = ids.every((id) => T.items.find((i) => i.id === id)?.pack_last); patchItems(ids, { pack_last: !allLast }, allLast ? "taken out of Pack last" : "moved to Pack last"); }
       if (b.dataset.act === "inv") { const list = T.items.filter((i) => view.picked.has(i.id)); view.picked.clear(); view.select = false; drawTrip(); addToInventory(list); }
     }));
     $("#shareBtn").addEventListener("click", shareTrip);
@@ -801,6 +840,12 @@
         patchItems(ids, { bag: v }, v ? `moved to ${v}` : "taken out of bags");
       });
   }
+  function pickPerson(ids) {
+    const one = ids.length === 1 ? T.items.find((i) => i.id === ids[0]) : null;
+    const opts = [[session.user.id, "Me"], ...T.members.filter((m) => m.user_id !== session.user.id).map((m) => [m.user_id, nameOf(m.user_id)]), ["", "Anyone"]];
+    choice(one ? `Who's bringing ${one.name}?` : `Who's bringing these ${ids.length}?`, opts, one ? (one.assigned_to || "") : null,
+      (v) => patchItems(ids, { assigned_to: v || null }, v ? `assigned to ${v === session.user.id ? "you" : nameOf(v)}` : "open to anyone"));
+  }
   function pickKind(ids) {
     const one = ids.length === 1 ? T.items.find((i) => i.id === ids[0]) : null;
     choice(`Type for ${one ? one.name : ids.length + " items"}`, KINDS, one ? kindOf(one) : null, (v) => patchItems(ids, { kind: v }, `set to ${v}`));
@@ -844,7 +889,7 @@
     for (const it of loose) {
       const r = byName.get(key(it.name)) || res.items.find((x) => key(it.name).includes(key(x.name)) || key(x.name).includes(key(it.name)));
       if (!r) continue;
-      const patch = { name: r.name, qty: r.qty || it.qty, category: r.category || "Other", bag: r.bag || it.bag, kind: r.kind || it.kind, purpose: r.purpose || it.purpose };
+      const patch = { name: r.name, qty: r.qty || it.qty, category: r.category || "Other", bag: r.bag || it.bag, kind: r.kind || it.kind, purpose: r.purpose || it.purpose, pack_last: !!r.last || !!it.pack_last };
       Object.assign(it, patch);
       await write({ type: "update", table: "items", ids: [it.id], patch }).catch(() => {});
     }
@@ -860,6 +905,8 @@
       <div><label class="f" for="ec">Category</label><input class="t" id="ec" value="${esc(it.category)}" list="cats" maxlength="40"><datalist id="cats">${cats.map((c) => `<option value="${esc(c)}">`).join("")}</datalist></div></div>
       <label class="f">Type</label><div class="seg wide" id="ek">${KINDS.map(([k, l]) => `<button type="button" data-k="${k}" class="${kindOf(it) === k ? "on" : ""}">${l}</button>`).join("")}</div>
       <label class="f">For</label><div class="seg wide" id="ep">${[["personal", "Personal"], ["work", "Work"]].map(([k, l]) => `<button type="button" data-k="${k}" class="${purposeOf(it) === k ? "on" : ""}">${l}</button>`).join("")}</div>
+      ${T.members.length > 1 ? `<label class="f" for="ew">Who's bringing it</label><select class="t" id="ew"><option value="">Anyone</option>${T.members.map((m) => `<option value="${m.user_id}"${m.user_id === it.assigned_to ? " selected" : ""}>${esc(m.user_id === session.user.id ? "Me" : nameOf(m.user_id))}</option>`).join("")}</select>` : ""}
+      <label class="check-row"><input type="checkbox" id="el"${it.pack_last ? " checked" : ""}><span class="grow">Pack last <small class="muted">(you'll use it until you leave)</small></span></label>
       <label class="f" for="eb">Bag</label><select class="t" id="eb"><option value="">No bag</option>${T.trip.bags.map((b) => `<option${key(b) === key(it.bag) ? " selected" : ""}>${esc(b)}</option>`).join("")}<option value="__new">+ New bag…</option></select>
       <label class="f" for="eo">Note</label><input class="t" id="eo" value="${esc(it.note)}" maxlength="200">
       <button class="primary" type="submit">Save</button>
@@ -878,7 +925,8 @@
     $("#ef").addEventListener("submit", async (e) => {
       e.preventDefault();
       const patch = { name: $("#en").value.trim(), qty: $("#eq").value.trim(), category: $("#ec").value.trim() || "Other", note: $("#eo").value.trim(),
-        bag: $("#eb").value === "__new" ? it.bag : $("#eb").value, kind: $("#ek .on")?.dataset.k || kindOf(it), purpose: $("#ep .on")?.dataset.k || purposeOf(it) };
+        bag: $("#eb").value === "__new" ? it.bag : $("#eb").value, kind: $("#ek .on")?.dataset.k || kindOf(it), purpose: $("#ep .on")?.dataset.k || purposeOf(it),
+        pack_last: $("#el").checked, ...($("#ew") ? { assigned_to: $("#ew").value || null } : {}) };
       closeSheet(); Object.assign(it, patch); cacheTrip(); drawTrip();
       write({ type: "update", table: "items", ids: [it.id], patch }).catch(fail);
     });
@@ -959,6 +1007,207 @@
           must(await sb.from("trip_members").delete().eq("trip_id", id).eq("user_id", session.user.id)); store.set("trip." + id, null); go("#/");
         }
       } catch (err) { fail(err); }
+    });
+  }
+
+  // ───────────────────────── trip ledger ─────────────────────────
+  let EX = null; // { tripId, expenses: [{..., expense_shares: [...]}] }
+  async function fetchExpenses(id) {
+    const rows = must(await sb.from("expenses").select("*, expense_shares(*)").eq("trip_id", id).order("spent_on", { ascending: false }).order("created_at", { ascending: false }));
+    return applyPendingExpenses({ tripId: id, expenses: rows });
+  }
+  function applyPendingExpenses(ex) {
+    for (const op of outbox) {
+      if (op.table === "expenses" && op.type === "insert") for (const r of op.rows) if (r.trip_id === ex.tripId && !ex.expenses.some((e) => e.id === r.id)) ex.expenses.unshift({ ...r, expense_shares: [] });
+      if (op.table === "expenses" && op.type === "update") ex.expenses.forEach((e) => { if (op.ids?.includes(e.id)) Object.assign(e, op.patch); });
+      if (op.table === "expenses" && op.type === "delete") ex.expenses = ex.expenses.filter((e) => !op.ids?.includes(e.id));
+      if (op.table === "expense_shares" && op.type === "insert") for (const r of op.rows) { const e = ex.expenses.find((x) => x.id === r.expense_id); if (e && !e.expense_shares.some((x) => x.user_id === r.user_id)) e.expense_shares.push({ paid_back: false, ...r }); }
+      if (op.table === "expense_shares" && op.type === "update") ex.expenses.forEach((e) => e.expense_shares.forEach((x) => { if (x.expense_id === op.eq?.expense_id && x.user_id === op.eq?.user_id) Object.assign(x, op.patch); }));
+      if (op.table === "expense_shares" && op.type === "delete") ex.expenses.forEach((e) => { if (e.id === op.eq?.expense_id) e.expense_shares = e.expense_shares.filter((x) => op.eq.user_id && x.user_id !== op.eq.user_id); });
+    }
+    return ex;
+  }
+  const cacheEx = () => { if (EX) { store.set("exp." + EX.tripId, EX); if (T) { T.expensesTotal = EX.expenses.reduce((a, e) => a + e.amount_cents, 0); store.set("trip." + T.trip.id, T); } } };
+
+  // Who owes whom, netted per pair of people, from shares not yet paid back.
+  function balances(ex) {
+    const owe = new Map(); // "debtor|creditor" -> cents
+    for (const e of ex.expenses) for (const sh of e.expense_shares || []) {
+      if (sh.user_id === e.paid_by || sh.paid_back || !sh.amount_cents) continue;
+      const k = sh.user_id + "|" + e.paid_by; owe.set(k, (owe.get(k) || 0) + sh.amount_cents);
+    }
+    const pairs = [], seen = new Set();
+    for (const k of owe.keys()) {
+      const [a, b] = k.split("|"); const id = [a, b].sort().join("|"); if (seen.has(id)) continue; seen.add(id);
+      const net = (owe.get(a + "|" + b) || 0) - (owe.get(b + "|" + a) || 0);
+      if (net > 0) pairs.push({ from: a, to: b, cents: net }); else if (net < 0) pairs.push({ from: b, to: a, cents: -net });
+    }
+    return pairs.sort((x, y) => (y.from === session.user.id || y.to === session.user.id) - (x.from === session.user.id || x.to === session.user.id) || y.cents - x.cents);
+  }
+
+  async function renderExpenses(id) {
+    if (!T || T.trip.id !== id) {
+      const cached = store.get("trip." + id, null);
+      T = cached || (await fetchTrip(id));
+      if (!T) return go("#/");
+    }
+    EX = store.get("exp." + id, null);
+    if (EX) drawExpenses(); else app.innerHTML = header({ title: T.trip.name, back: "#/" }) + `<main>${tripTabs("expenses")}<p class="hint"><span class="spin"></span><span>Loading…</span></p></main>`;
+    const [fresh, ex] = await Promise.all([fetchTrip(id), fetchExpenses(id)]);
+    if (fresh) T = fresh;
+    EX = ex; cacheEx(); drawExpenses();
+    let h;
+    channel = sb.channel("exp-" + id)
+      .on("postgres_changes", { event: "*", schema: "public", table: "expenses", filter: `trip_id=eq.${id}` }, () => { clearTimeout(h); h = setTimeout(refresh, 300); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "expense_shares" }, () => { clearTimeout(h); h = setTimeout(refresh, 300); })
+      .subscribe();
+    async function refresh() {
+      if (location.hash !== `#/trip/${id}/expenses`) return;
+      const ex2 = await fetchExpenses(id).catch(() => null); if (ex2) { EX = ex2; cacheEx(); drawExpenses(); }
+    }
+  }
+
+  function drawExpenses() {
+    const { trip } = T, cur = trip.currency || "USD", me_ = session.user.id;
+    const shared = T.members.length > 1;
+    const list = EX.expenses;
+    const total = list.reduce((a, e) => a + e.amount_cents, 0);
+    const myShare = list.reduce((a, e) => a + ((e.expense_shares || []).find((x) => x.user_id === me_)?.amount_cents || 0), 0);
+    const iPaid = list.filter((e) => e.paid_by === me_).reduce((a, e) => a + e.amount_cents, 0);
+    const pairs = balances(EX);
+    const myNet = pairs.reduce((a, p) => a + (p.to === me_ ? p.cents : p.from === me_ ? -p.cents : 0), 0);
+    const scrollY = window.scrollY;
+    const byDay = new Map();
+    for (const e of list) { const d = e.spent_on || today(); if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(e); }
+
+    app.innerHTML = header({ title: trip.name, back: "#/", more: false, sub: [dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · ") }) + `<main>
+      ${tripTabs("expenses")}
+      <div class="stats" style="margin-bottom:12px">
+        ${`<div class="stat"><b>${esc(money(total, cur))}</b><span>trip total</span></div>`}
+        ${`<div class="stat"><b>${esc(money(myShare, cur))}</b><span>your share</span></div>`}
+        ${`<div class="stat"><b>${esc(money(iPaid, cur))}</b><span>you paid</span></div>`}
+      </div>
+      ${shared ? `<section class="card balance ${myNet > 0 ? "plus" : myNet < 0 ? "minus" : "even"}">
+        <div class="bal-head">${myNet > 0 ? `You're owed <b>${esc(money(myNet, cur))}</b>` : myNet < 0 ? `You owe <b>${esc(money(-myNet, cur))}</b>` : list.length ? "You're all square ✓" : "No expenses yet"}</div>
+        ${pairs.map((p, n) => `<div class="row"><span class="avs">${avatar(profileOf(p.from))}${avatar(profileOf(p.to))}</span>
+          <span class="nm">${p.from === me_ ? `You owe ${esc(nameOf(p.to))}` : p.to === me_ ? `${esc(nameOf(p.from))} owes you` : `${esc(nameOf(p.from))} owes ${esc(nameOf(p.to))}`} <b>${esc(money(p.cents, cur))}</b></span>
+          <button class="pill" data-settle="${n}">Paid back</button></div>`).join("")}
+      </section>` : `<p class="hint" style="margin:0 4px 12px">Share this trip to split costs. Pack keeps a running tally of who owes whom.</p>`}
+      ${list.length ? "" : `<div class="empty"><strong>No expenses yet</strong>Log coffees, meals, gas, campsites, whoever paid. Pack splits them and keeps track of who owes whom.</div>`}
+      ${[...byDay.entries()].map(([d, es]) => `<h3 class="sec">${esc(fmtDate(d, { weekday: "short", month: "short", day: "numeric" }))}</h3>
+        ${es.map((e) => `<section class="card expense" data-exp="${e.id}">
+          <button class="exp-main" data-edit-exp="${e.id}"><span class="grow"><strong>${esc(e.description)}</strong>
+            <span class="note">${e.paid_by === me_ ? "You paid" : `${esc(nameOf(e.paid_by))} paid`}${(e.expense_shares || []).length > 1 ? ` · split ${(e.expense_shares || []).length} ways` : ""}</span></span>
+            <b class="amt">${esc(money(e.amount_cents, cur))}</b></button>
+          ${shared && (e.expense_shares || []).length ? `<div class="shares">${e.expense_shares.map((sh) => sh.user_id === e.paid_by
+            ? `<span class="share self">${avatar(profileOf(sh.user_id), "sm")}${esc(sh.user_id === me_ ? "Your share" : nameOf(sh.user_id) + "'s share")} ${esc(money(sh.amount_cents, cur))}</span>`
+            : `<button class="share${sh.paid_back ? " paid" : ""}" data-share="${e.id}|${sh.user_id}" aria-pressed="${sh.paid_back}">${avatar(profileOf(sh.user_id), "sm")}${sh.user_id === me_ ? (sh.paid_back ? `You paid back ${esc(money(sh.amount_cents, cur))} ✓` : `You owe ${esc(money(sh.amount_cents, cur))}`) : (sh.paid_back ? `${esc(nameOf(sh.user_id))} paid back ${esc(money(sh.amount_cents, cur))} ✓` : `${esc(nameOf(sh.user_id))} owes ${esc(money(sh.amount_cents, cur))}`)}</button>`).join("")}</div>` : ""}
+        </section>`).join("")}`).join("")}
+      ${shared && list.length ? `<p class="hint" style="margin:10px 4px">Tap someone's share to mark it paid back. Balances update right away.</p>` : ""}
+    </main>
+    <div class="add"><div style="max-width:760px;margin:0 auto"><button class="primary" id="addExp" style="margin:0">+ Add expense</button></div></div>`;
+    window.scrollTo(0, scrollY);
+
+    $("#addExp").addEventListener("click", () => expenseSheet(null));
+    $$("[data-edit-exp]").forEach((b) => b.addEventListener("click", () => expenseSheet(EX.expenses.find((e) => e.id === b.dataset.editExp))));
+    $$("[data-share]").forEach((b) => b.addEventListener("click", async () => {
+      const [eid, uid] = b.dataset.share.split("|");
+      const sh = EX.expenses.find((e) => e.id === eid)?.expense_shares.find((x) => x.user_id === uid); if (!sh) return;
+      sh.paid_back = !sh.paid_back; cacheEx(); drawExpenses();
+      try { await write({ type: "update", table: "expense_shares", eq: { expense_id: eid, user_id: uid }, patch: { paid_back: sh.paid_back } }); }
+      catch (err) { sh.paid_back = !sh.paid_back; cacheEx(); drawExpenses(); fail(err); }
+    }));
+    $$("[data-settle]").forEach((b) => b.addEventListener("click", async () => {
+      const pr = pairs[+b.dataset.settle];
+      if (!confirm(`Mark everything between ${pr.from === me_ ? "you" : nameOf(pr.from)} and ${pr.to === me_ ? "you" : nameOf(pr.to)} as paid back (${money(pr.cents, cur)})?`)) return;
+      const ops = [];
+      for (const e of EX.expenses) for (const sh of e.expense_shares || []) {
+        if (sh.paid_back || sh.user_id === e.paid_by) continue;
+        if ((sh.user_id === pr.from && e.paid_by === pr.to) || (sh.user_id === pr.to && e.paid_by === pr.from)) { sh.paid_back = true; ops.push({ expense_id: e.id, user_id: sh.user_id }); }
+      }
+      cacheEx(); drawExpenses();
+      try { for (const k of ops) await write({ type: "update", table: "expense_shares", eq: k, patch: { paid_back: true } }); toast("Marked as paid back"); }
+      catch (err) { fail(err); }
+    }));
+  }
+
+  // Add or edit an expense: amount, who paid, who it's split between (equally or custom).
+  function expenseSheet(e) {
+    const cur = T.trip.currency || "USD", me_ = session.user.id, d = curDigits(cur);
+    const members = T.members.map((m) => m.user_id);
+    const old = e ? Object.fromEntries((e.expense_shares || []).map((x) => [x.user_id, x])) : {};
+    let split = e ? Object.keys(old) : [...members];
+    let custom = e ? (e.expense_shares || []).some((x, _, a) => Math.abs(x.amount_cents - e.amount_cents / a.length) >= 1) : false;
+    const fmtIn = (c) => (c / 10 ** d).toFixed(d);
+    openSheet(`<h2>${e ? "Edit expense" : "Add expense"}</h2><form id="xf" autocomplete="off">
+      <label class="f" for="xd">What for</label><input class="t" id="xd" value="${esc(e?.description || "")}" placeholder="Coffee, dinner, gas…" required maxlength="120" data-autofocus>
+      <div class="row2"><div><label class="f" for="xa">Amount (${esc(cur)})</label><input class="t" id="xa" inputmode="decimal" value="${e ? fmtIn(e.amount_cents) : ""}" placeholder="0.00" required></div>
+        <div><label class="f" for="xt">Date</label><input class="t" id="xt" type="date" value="${esc(e?.spent_on || (T.trip.start_date && T.trip.start_date > today() ? T.trip.start_date : today()))}"></div></div>
+      ${members.length > 1 ? `<label class="f" for="xp">Paid by</label><select class="t" id="xp">${members.map((u) => `<option value="${u}"${u === (e?.paid_by || me_) ? " selected" : ""}>${esc(u === me_ ? "Me" : nameOf(u))}</option>`).join("")}</select>
+      <label class="f">Split between</label><div class="chips" id="xs">${members.map((u) => `<button type="button" class="chip${split.includes(u) ? " on" : ""}" data-u="${u}">${esc(u === me_ ? "Me" : nameOf(u))}</button>`).join("")}</div>
+      <label class="check-row"><input type="checkbox" id="xc"${custom ? " checked" : ""}><span class="grow">Split unevenly</span></label>
+      <div id="xcustom"></div>` : ""}
+      <p class="hint" id="xerr" role="alert" style="color:var(--err)"></p>
+      <button class="primary" type="submit">${e ? "Save" : "Add expense"}</button>
+      ${e ? `<button class="danger-btn" type="button" id="xdel">Delete expense</button>` : ""}</form>`);
+    const drawCustom = () => {
+      const box = $("#xcustom"); if (!box) return;
+      if (!$("#xc").checked) { box.innerHTML = ""; return; }
+      // Keep anything already typed when the list of people changes.
+      const typed = Object.fromEntries($$("[data-cu]", box).map((i) => [i.dataset.cu, i.value]));
+      const val = (u) => typed[u] ?? (old[u] && e ? fmtIn(old[u].amount_cents) : "");
+      box.innerHTML = split.map((u) => `<div class="row2" style="align-items:center;margin-top:8px"><span>${esc(u === me_ ? "Me" : nameOf(u))}</span>
+        <input class="t" inputmode="decimal" data-cu="${u}" value="${esc(val(u))}" placeholder="0.00"></div>`).join("");
+    };
+    drawCustom();
+    $("#xs")?.addEventListener("click", (ev) => {
+      const b = ev.target.closest("[data-u]"); if (!b) return;
+      const u = b.dataset.u; split = split.includes(u) ? split.filter((x) => x !== u) : [...split, u];
+      if (!split.length) split = [u];
+      b.parentElement.querySelectorAll("[data-u]").forEach((x) => x.classList.toggle("on", split.includes(x.dataset.u)));
+      drawCustom();
+    });
+    $("#xc")?.addEventListener("change", drawCustom);
+    $("#xdel")?.addEventListener("click", async () => {
+      if (!confirm(`Delete “${e.description}”?`)) return;
+      closeSheet(); EX.expenses = EX.expenses.filter((x) => x.id !== e.id); cacheEx(); drawExpenses();
+      write({ type: "delete", table: "expenses", ids: [e.id] }).catch(fail);
+    });
+    $("#xf").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const amount = parseMoney($("#xa").value, cur);
+      if (!amount) return ($("#xerr").textContent = "Enter an amount.");
+      const payer = $("#xp")?.value || me_;
+      const people = members.length > 1 ? split : [me_];
+      let shares;
+      if ($("#xc")?.checked) {
+        shares = people.map((u) => ({ user_id: u, amount_cents: parseMoney($(`[data-cu="${u}"]`)?.value, cur) }));
+        const sum = shares.reduce((a, x) => a + x.amount_cents, 0);
+        if (sum !== amount) return ($("#xerr").textContent = `Shares add up to ${money(sum, cur)}, not ${money(amount, cur)}.`);
+      } else {
+        const base = Math.floor(amount / people.length); let rest = amount - base * people.length;
+        // Any leftover cent goes to the payer first, then in order.
+        const ordered = [...people].sort((a, b) => (b === payer) - (a === payer));
+        shares = ordered.map((u) => ({ user_id: u, amount_cents: base + (rest-- > 0 ? 1 : 0) }));
+      }
+      const row = { description: $("#xd").value.trim().slice(0, 120), amount_cents: amount, paid_by: payer, spent_on: $("#xt").value || today() };
+      const shareRows = (eid) => shares.map((x) => ({ expense_id: eid, user_id: x.user_id, amount_cents: x.amount_cents,
+        paid_back: x.user_id !== payer && !!old[x.user_id]?.paid_back && old[x.user_id]?.amount_cents === x.amount_cents && e?.paid_by === payer }));
+      closeSheet();
+      try {
+        if (e) {
+          Object.assign(e, row); e.expense_shares = shareRows(e.id); cacheEx(); drawExpenses();
+          for (const u of Object.keys(old)) await write({ type: "delete", table: "expense_shares", eq: { expense_id: e.id, user_id: u } });
+          await write({ type: "update", table: "expenses", ids: [e.id], patch: row });
+          await write({ type: "insert", table: "expense_shares", rows: shareRows(e.id) });
+        } else {
+          const eid = newId();
+          const full = { id: eid, trip_id: T.trip.id, created_by: me_, ...row };
+          EX.expenses.unshift({ ...full, created_at: new Date().toISOString(), expense_shares: shareRows(eid) }); cacheEx(); drawExpenses();
+          await write({ type: "insert", table: "expenses", rows: [full] });
+          await write({ type: "insert", table: "expense_shares", rows: shareRows(eid) });
+        }
+      } catch (err) { fail(err); renderExpenses(T.trip.id); }
     });
   }
 
@@ -1113,6 +1362,8 @@
       <form id="nf"><label class="f" for="dn">Your name <small>(shown to people you pack with)</small></label>
         <input class="t" id="dn" value="${esc(me?.display_name || "")}" maxlength="60">
         <button class="secondary" type="submit">Save name</button></form>
+      <h3 class="sec">Reminders</h3>
+      <label class="check-row" style="margin-top:0"><input type="checkbox" id="remind"${me?.reminders === false ? "" : " checked"}><span class="grow">Email me the day before a trip<br><small class="muted">What's left to pack and what to grab last, sent around 9am your time.</small></span></label>
       <h3 class="sec">Smart sorting</h3>
       <p class="hint" style="margin:0 4px">Each person gets ${cfg.dailyLimit || 25} smart sorts a day. Checking things off, editing and sharing never count.</p>
       <h3 class="sec">On your iPhone or iPad</h3>
@@ -1125,6 +1376,12 @@
         const { error } = await sb.from("profiles").update({ display_name: name }).eq("id", session.user.id);
         if (error) return fail(error);
         me.display_name = name; toast("Saved"); renderAccount();
+      });
+      $("#remind").addEventListener("change", async (e) => {
+        const on = e.target.checked;
+        const { error } = await sb.from("profiles").update({ reminders: on }).eq("id", session.user.id);
+        if (error) { e.target.checked = !on; return fail(error); }
+        me.reminders = on; store.set("me", me); toast(on ? "Reminders on" : "Reminders off");
       });
       $("#out").addEventListener("click", async () => {
         for (const k of Object.keys(localStorage)) if (k.startsWith("pack2.") && k !== "pack2.cfg" && k !== "pack2.lastEmail") localStorage.removeItem(k);
@@ -1184,8 +1441,16 @@
       <h3 class="sec">Everyone (${a.people.length})</h3>
       <div class="card people">${a.people.map((p) => `<div class="row"><span class="nm">${esc(p.email)}<span class="note">Joined ${esc(fmtDate(String(p.joined).slice(0, 10)))} · active ${esc(ago(p.last_active))}${p.days_active > 1 ? ` · ${p.days_active} days` : ""}</span></span>
         <span class="qty" title="Trips">${plural(p.trips, "trip")}</span><span class="qty" title="Smart sorts, last 30 days">${p.sorts_30d} sorts</span></div>`).join("")}</div>
+      <h3 class="sec">Reminder emails</h3>
+      <button class="secondary" id="testRem" style="margin-top:0">Send me a test reminder</button>
+      <p class="hint" style="margin:6px 4px">Uses your next trip. Needs a Resend API key in Netlify.</p>
       <p class="hint" style="margin:12px 4px">“Active” means someone opened Pack that day. Days are in UTC. Only you can see this page.</p>
     </main>`;
+    $("#testRem").addEventListener("click", async (e) => {
+      busy(e.currentTarget, true, "Sending…");
+      try { const r = await api("/api/test-reminder", {}); toast(`Sent to ${r.to}`); } catch (err) { fail(err); }
+      busy(e.currentTarget, false);
+    });
   }
 
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
