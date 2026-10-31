@@ -35,6 +35,13 @@ weather-aware suggestions. Trips can be shared so a group packs together.
 | `RESEND_API_KEY` | resend.com → API Keys (day-before reminder emails; domain spruceandsound.com verified in Resend) |
 | `PACK_FROM_EMAIL` | optional, default `Pack <hello@spruceandsound.com>` |
 
+## Content calendar (admin only)
+
+`#/admin/content` shows the marketing calendar to admins. The files in `content/` are AES-256-GCM
+encrypted blobs (safe in this public repo). The key is stored only in the `app_secrets` table and
+handed to admins by the `content_key()` function (`supabase/07-content-calendar.sql`); the page
+decrypts in the browser. "Posted" check marks are saved in `content_posted`.
+
 ## Supabase settings
 
 - Authentication → URL Configuration: Site URL `https://pack.spruceandsound.com`,

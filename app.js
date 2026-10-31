@@ -217,6 +217,7 @@
       if (view === "templates") return await renderTemplates();
       if (view === "template" && id) return await renderTemplate(id);
       if (view === "account") return await renderAccount();
+      if (view === "admin" && id === "content") return await renderContent();
       if (view === "admin") return await renderAdmin();
       return await renderHome();
     } catch (e) {
@@ -1483,7 +1484,8 @@
     const pct = (x, y) => (y ? Math.round((x / y) * 100) + "%" : "–");
     const ago = (d) => { if (!d) return "never"; const n = Math.round((new Date(today() + "T12:00:00") - new Date(String(d).slice(0, 10) + "T12:00:00")) / 864e5); return n <= 0 ? "today" : n === 1 ? "yesterday" : `${n} days ago`; };
     app.innerHTML = header({ title: "Admin", back: "#/account", sub: "Pack usage across everyone · updated just now" }) + `<main>
-      <h3 class="sec" style="margin-top:4px">People</h3>
+      <a class="card cc-link" href="#/admin/content"><span class="cc-li">📣</span><span class="grow"><b>Content calendar</b><small>30 days of Instagram + TikTok posts, with files to download</small></span><span class="muted">›</span></a>
+      <h3 class="sec">People</h3>
       <div class="stats">
         ${stat(a.users, "accounts")}${stat(a.users_7d, "new this week")}${stat(a.active_1d, "active today")}
         ${stat(a.active_7d, "active this week")}${stat(a.active_30d, "active this month")}${stat(pct(a.returning_users, a.users), "came back another day")}
@@ -1511,6 +1513,153 @@
       busy(e.currentTarget, true, "Sending…");
       try { const r = await api("/api/test-reminder", {}); toast(`Sent to ${r.to}`); } catch (err) { fail(err); }
       busy(e.currentTarget, false);
+    });
+  }
+
+  // ───────────────────────── admin: content calendar ─────────────────────────
+  // Files live in /content as AES-GCM blobs; only admins can get the key (content_key RPC).
+  const contentState = { key: null, cal: null, urls: {}, posted: new Set(), tab: "cal" };
+  async function contentKey() {
+    if (contentState.key) return contentState.key;
+    const { data, error } = await sb.rpc("content_key");
+    if (error || !data) throw new Error("admins");
+    contentState.key = await crypto.subtle.importKey("raw", Uint8Array.from(atob(data), (c) => c.charCodeAt(0)), "AES-GCM", false, ["decrypt"]);
+    return contentState.key;
+  }
+  async function decryptBlob(path) {
+    const res = await fetch("/content/" + path, { cache: "no-cache" });
+    if (!res.ok) throw new Error("Couldn't load " + path);
+    const buf = new Uint8Array(await res.arrayBuffer());
+    return crypto.subtle.decrypt({ name: "AES-GCM", iv: buf.slice(0, 12) }, await contentKey(), buf.slice(12));
+  }
+  async function contentFile(name) {
+    if (contentState.urls[name]) return contentState.urls[name];
+    const f = contentState.cal.files[name]; if (!f) throw new Error("Missing " + name);
+    const p = decryptBlob(f.blob).then((b) => URL.createObjectURL(new Blob([b], { type: f.type })));
+    contentState.urls[name] = p; p.catch(() => delete contentState.urls[name]);
+    return p;
+  }
+  async function downloadContent(name, btn) {
+    const old = btn?.textContent; if (btn) { btn.disabled = true; btn.textContent = "Preparing…"; }
+    try { const a = document.createElement("a"); a.href = await contentFile(name); a.download = name; document.body.append(a); a.click(); a.remove(); }
+    catch (e) { fail(e); }
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+  }
+  const mb = (n) => (n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB");
+  const platIcon = (p) => (/TikTok/.test(p) ? "♪" : /Story/.test(p) ? "◎" : /Carousel/.test(p) ? "▦" : "▶");
+
+  async function renderContent() {
+    app.innerHTML = header({ title: "Content calendar", back: "#/admin", sub: "Instagram + TikTok · only you can see this" }) + `<main><p class="hint"><span class="spin"></span><span>Unlocking…</span></p></main>`;
+    try {
+      await contentKey();
+      if (!contentState.cal) contentState.cal = JSON.parse(new TextDecoder().decode(await decryptBlob("calendar.bin")));
+      const { data } = await sb.from("content_posted").select("post_id");
+      contentState.posted = new Set((data || []).map((r) => r.post_id));
+    } catch (e) {
+      app.innerHTML = header({ title: "Content calendar", back: "#/admin" }) + `<main><div class="empty"><strong>${e.message === "admins" ? "Admins only" : "Couldn't open the calendar"}</strong>${e.message === "admins" ? "This page is only for Pack's owner." : esc(e.message)}</div></main>`;
+      return;
+    }
+    drawContent();
+  }
+
+  function drawContent() {
+    const C = contentState.cal, S = C.strategy, td = today();
+    const allPosts = C.days.flatMap((d) => d.posts);
+    const done = allPosts.filter((p) => contentState.posted.has(p.id)).length;
+    const nextDay = C.days.find((d) => d.date >= td) || C.days[0];
+    const list = (a) => `<ul class="cc-ul">${a.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+    const weeks = [...new Set(C.days.map((d) => d.week))];
+    const dayCard = (d) => {
+      const posted = d.posts.filter((p) => contentState.posted.has(p.id)).length;
+      return `<details class="card cc-day${d.date === td ? " today" : ""}${posted === d.posts.length ? " done" : ""}" data-day="${d.day}"${d.date === nextDay.date ? " open" : ""}>
+        <summary>
+          <div class="cc-date"><b>${esc(fmtDate(d.date, { day: "numeric" }))}</b><span>${esc(fmtDate(d.date, { weekday: "short" }))}</span></div>
+          <div class="grow"><div class="cc-title">${esc(d.title)}${d.date === td ? ` <span class="badge">Today</span>` : ""}</div>
+            <div class="cc-posts">${d.posts.map((p) => `<span class="${contentState.posted.has(p.id) ? "on" : ""}">${platIcon(p.platform)} ${esc(p.platform.replace("Instagram ", "IG "))} · ${esc(p.time)}</span>`).join("")}</div></div>
+          <span class="cc-count">${posted}/${d.posts.length}</span>
+        </summary>
+        <div class="cc-body"></div>
+      </details>`;
+    };
+    $("main", app).innerHTML = `
+      <div class="stats">${stat(C.days.length, "days")}${stat(allPosts.length, "posts")}${stat(`${done}/${allPosts.length}`, "posted")}</div>
+      <div class="progress cc-prog"><i style="width:${Math.round((done / allPosts.length) * 100)}%"></i></div>
+      <div class="card cc-dl">
+        <div class="cc-dlh"><b>Download</b><span class="muted">Each week's ZIP has every image, video and caption, sorted into a folder per day.</span></div>
+        ${C.downloads.map((x) => `<button class="secondary" data-dl="${esc(x.name)}">⬇ ${esc(x.label)} <small>${mb(C.files[x.name]?.size || 0)}</small></button>`).join("")}
+        <div class="cc-dlrow">
+          <button class="secondary" data-dl="pack-calendar.ics">📅 Posting times (.ics)</button>
+          <button class="secondary" data-dl="pack-calendar.csv">📊 Spreadsheet (.csv)</button>
+          <button class="secondary" data-dl="pack-strategy.md">📝 Strategy (.md)</button>
+        </div>
+        <p class="hint" style="margin:8px 2px 0">Open the .ics to put every posting time in your calendar, with a 15-minute alert and the caption inside.</p>
+      </div>
+      <div class="seg wide" style="margin:18px 0 6px"><button data-ctab="cal" class="${contentState.tab === "cal" ? "on" : ""}">Calendar</button><button data-ctab="plan" class="${contentState.tab === "plan" ? "on" : ""}">Strategy &amp; best practices</button></div>
+      ${contentState.tab === "cal" ? weeks.map((w) => `<h3 class="sec">Week ${w} · ${esc(C.days.find((d) => d.week === w).theme)}</h3>${C.days.filter((d) => d.week === w).map(dayCard).join("")}`).join("") : `
+        <div class="card cc-plan">
+          <h4>Goal</h4><p>${esc(S.goal)}</p>
+          <h4>Who it's for</h4><p>${esc(S.audience)}</p>
+          <h4>Positioning</h4><p>${esc(S.positioning)}</p>
+          <h4>Content pillars</h4><ul class="cc-ul">${S.pillars.map(([a, b]) => `<li><b>${esc(a)}.</b> ${esc(b)}</li>`).join("")}</ul>
+          <h4>When to post</h4>${list(S.times)}
+          <h4>Cadence</h4>${list(S.cadence)}
+          <h4>Best practices</h4>${list(S.practices)}
+          <h4>Measuring</h4>${list(S.measure)}
+          <p class="hint">Times are Pacific. If most of your followers are on the East Coast, post at the same clock time Eastern.</p>
+        </div>`}`;
+    $$("[data-dl]", app).forEach((b) => b.addEventListener("click", () => downloadContent(b.dataset.dl, b)));
+    $$("[data-ctab]", app).forEach((b) => b.addEventListener("click", () => { contentState.tab = b.dataset.ctab; drawContent(); }));
+    $$(".cc-day", app).forEach((el) => {
+      el.addEventListener("toggle", () => { if (el.open) fillDay(el); });
+      if (el.open) fillDay(el);
+    });
+    const t = $(".cc-day[open]", app);
+    if (t && contentState.tab === "cal" && !drawContent.scrolled && t !== $(".cc-day", app)) {
+      drawContent.scrolled = true;
+      setTimeout(() => scrollTo({ top: t.getBoundingClientRect().top + scrollY - ($("header.bar")?.offsetHeight || 0) - 50, behavior: "smooth" }), 50);
+    }
+  }
+
+  function fillDay(el) {
+    const body = $(".cc-body", el); if (body.dataset.filled) return; body.dataset.filled = "1";
+    const C = contentState.cal, d = C.days.find((x) => String(x.day) === el.dataset.day);
+    const files = [...new Set(d.posts.flatMap((p) => p.assets))];
+    const copyBtn = (label, text) => `<button class="tog cc-copy" data-copy="${esc(text)}">${esc(label)}</button>`;
+    body.innerHTML = `
+      <div class="cc-media">${files.map((f) => `<figure data-f="${esc(f)}"><div class="cc-thumb ${/\.mp4$/.test(f) ? "vid" : ""}"><span class="spin"></span></div><figcaption>${esc(f)}</figcaption>
+        <button class="tog" data-dlf="${esc(f)}">Download</button></figure>`).join("") || `<p class="hint">Nothing to download for this day.</p>`}</div>
+      ${d.ready ? `<p class="cc-ready">✓ The video is finished and ready to post. Add a trending sound inside the app.</p>` : ""}
+      ${d.pain ? `<p class="cc-k"><b>Pain point</b>${esc(d.pain)}</p>` : ""}
+      <p class="cc-k"><b>Hook · first 3 seconds</b>${esc(d.hook)}</p>
+      ${d.onscreen.length ? `<div class="cc-k"><b>On-screen text</b><ol>${d.onscreen.map((t) => `<li>${esc(t)}</li>`).join("")}</ol></div>` : ""}
+      <div class="cc-k"><b>Script / shot list</b><ul class="cc-ul">${[...d.script, ...(d.extra_script || [])].map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>
+      ${d.cta ? `<p class="cc-k"><b>Call to action</b>${esc(d.cta)}</p>` : ""}
+      ${d.posts.map((p) => `<div class="cc-post">
+        <div class="cc-ph"><b>${platIcon(p.platform)} ${esc(p.platform)}</b><span>${esc(p.time)} PT${p.format ? " · " + esc(p.format) : ""}</span>
+          <button class="tog ${contentState.posted.has(p.id) ? "on" : ""}" data-posted="${esc(p.id)}">${contentState.posted.has(p.id) ? "✓ Posted" : "Mark posted"}</button></div>
+        <p class="cc-why">${esc(p.why)}</p>
+        <pre class="cc-cap">${esc(p.caption)}${p.hashtags ? "\n\n" + esc(p.hashtags) : ""}</pre>
+        <div class="cc-acts">${copyBtn("Copy caption + tags", p.caption + (p.hashtags ? "\n\n" + p.hashtags : ""))}${p.hashtags ? copyBtn("Copy tags", p.hashtags) : ""}</div>
+      </div>`).join("")}`;
+    $$("[data-copy]", body).forEach((b) => b.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(b.dataset.copy); toast("Copied"); } catch { toast("Couldn't copy — select the text and copy it instead"); }
+    }));
+    $$("[data-dlf]", body).forEach((b) => b.addEventListener("click", () => downloadContent(b.dataset.dlf, b)));
+    $$("[data-posted]", body).forEach((b) => b.addEventListener("click", async () => {
+      const id = b.dataset.posted, on = !contentState.posted.has(id); b.disabled = true;
+      const { error } = on ? await sb.from("content_posted").insert({ post_id: id }) : await sb.from("content_posted").delete().eq("post_id", id);
+      b.disabled = false;
+      if (error && !/duplicate/i.test(error.message)) return fail(error);
+      on ? contentState.posted.add(id) : contentState.posted.delete(id);
+      const open = $$(".cc-day[open]", app).map((x) => x.dataset.day), y = scrollY;
+      drawContent(); $$(".cc-day", app).forEach((x) => { if (open.includes(x.dataset.day)) { x.open = true; fillDay(x); } else x.open = false; }); scrollTo(0, y);
+    }));
+    $$("figure[data-f]", body).forEach(async (fig) => {
+      const f = fig.dataset.f, box = $(".cc-thumb", fig);
+      try {
+        const url = await contentFile(f);
+        box.innerHTML = /\.mp4$/.test(f) ? `<video src="${url}" controls playsinline preload="metadata"></video>` : `<img src="${url}" alt="">`;
+      } catch { box.innerHTML = `<span class="muted">Couldn't load</span>`; }
     });
   }
 
