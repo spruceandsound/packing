@@ -8,7 +8,7 @@
 //   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY   (Supabase → Project Settings → API)
 //   ANTHROPIC_API_KEY
 //   PACK_MODEL             optional, default claude-haiku-5-5
-//   PACK_DAILY_LIMIT       optional, AI sorts per person per day (default 25)
+//   PACK_DAILY_LIMIT       optional, AI sorts per person per day (default 50, resets at midnight in their time zone)
 //   PACK_SITE_DAILY_LIMIT  optional, AI sorts for everyone combined per day (default 1000)
 
 import { buildReminder, sendEmail } from "../lib/reminder-email.mjs";
@@ -135,7 +135,7 @@ async function useSort(userId) {
     headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
     body: JSON.stringify({
       p_user: userId,
-      p_limit: Number(env("PACK_DAILY_LIMIT", "25")) || 25,
+      p_limit: Number(env("PACK_DAILY_LIMIT", "50")) || 50,
       p_site_limit: Number(env("PACK_SITE_DAILY_LIMIT", "1000")) || 1000,
     }),
   });
@@ -198,8 +198,8 @@ async function sort(req) {
   const have = (Array.isArray(body.have) ? body.have : []).map((c) => clip(c, 80)).filter(Boolean).slice(0, 150);
 
   const used = await useSort(user.id);
-  const limit = Number(env("PACK_DAILY_LIMIT", "25")) || 25;
-  if (used == null) return json({ error: `You've used all ${limit} smart sorts for today.`, limit }, 429);
+  const limit = Number(env("PACK_DAILY_LIMIT", "50")) || 50;
+  if (used == null) return json({ error: `You've used all ${limit} smart sorts for today. They reset at midnight.`, limit }, 429);
 
   const lines = [
     mode === "closet"
@@ -283,7 +283,7 @@ export default async (req) => {
   try {
     if (path === "/api/config" && req.method === "GET") {
       if (!env("SUPABASE_URL") || !env("SUPABASE_ANON_KEY")) return json({ error: "The app isn't set up yet (Supabase keys missing)." }, 503);
-      return json({ supabaseUrl: env("SUPABASE_URL"), supabaseAnonKey: env("SUPABASE_ANON_KEY"), dailyLimit: Number(env("PACK_DAILY_LIMIT", "25")) || 25 });
+      return json({ supabaseUrl: env("SUPABASE_URL"), supabaseAnonKey: env("SUPABASE_ANON_KEY"), dailyLimit: Number(env("PACK_DAILY_LIMIT", "50")) || 50 });
     }
     if (req.method !== "POST") return json({ error: "Not found" }, 404);
     if (path === "/api/weather") {

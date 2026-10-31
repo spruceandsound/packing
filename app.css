@@ -408,3 +408,21 @@ button.share.paid{border-color:color-mix(in srgb,var(--ok) 50%,var(--line));colo
 .cc-cap{white-space:pre-wrap;word-break:break-word;font:inherit;font-size:14.5px;line-height:1.45;margin:0;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;max-height:280px;overflow:auto}
 .cc-acts{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
 .cc-plan{padding:6px 16px 14px}.cc-plan h4{margin:16px 0 4px}.cc-plan p{margin:0}
+
+/* inventory suggestions while typing */
+.isug-wrap{position:relative;flex:1;min-width:0}
+.isug-wrap.block{display:block}
+.isug-wrap>input,.isug-wrap>textarea{width:100%}
+.isug{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:30;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 14px 36px rgba(20,30,25,.18);overflow:hidden;max-height:min(330px,46vh);overflow-y:auto}
+.isug.above{top:auto;bottom:calc(100% + 10px)}
+.isug-h{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:10px 14px 4px}
+.isug-o{display:flex;align-items:baseline;gap:10px;width:100%;text-align:left;border:0;background:none;padding:11px 14px;border-top:1px solid var(--line);font-size:16px}
+.isug-o:first-of-type{border-top:0}
+.isug-o.on,.isug-o:hover{background:var(--sunk)}
+.isug-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.isug-n b{font-weight:750;color:var(--pine)}
+@media (prefers-color-scheme:dark){.isug-n b{color:var(--amber)}}
+.isug-m{flex:none;font-size:13px;color:var(--muted);max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.add .isug-o{background:none;color:var(--ink);border-radius:0;min-width:0;display:flex;padding:11px 14px;font-weight:400;place-items:initial}
+.add .isug-o.on,.add .isug-o:hover{background:var(--sunk)}
+.add form{position:relative}

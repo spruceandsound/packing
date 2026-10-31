@@ -30,7 +30,7 @@ weather-aware suggestions. Trips can be shared so a group packs together.
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API Keys → secret key (keep private) |
 | `ANTHROPIC_API_KEY` | platform.claude.com → API keys |
 | `PACK_MODEL` | optional, default `claude-haiku-5-5` |
-| `PACK_DAILY_LIMIT` | optional, smart sorts per person per day, default 25 |
+| `PACK_DAILY_LIMIT` | optional, smart sorts per person per day, default 50 (resets at midnight in each person's time zone) |
 | `PACK_SITE_DAILY_LIMIT` | optional, smart sorts for everyone combined per day, default 1000 |
 | `RESEND_API_KEY` | resend.com → API Keys (day-before reminder emails; domain spruceandsound.com verified in Resend) |
 | `PACK_FROM_EMAIL` | optional, default `Pack <hello@spruceandsound.com>` |

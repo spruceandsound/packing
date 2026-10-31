@@ -491,6 +491,10 @@
       const t = tpls.find((x) => x.id === e.target.value);
       if (t) { for (const b of t.bags || []) if (!bags.some((x) => key(x) === key(b))) bags.push(b); drawBags(); }
     });
+    attachInventorySuggest($("#items"), {
+      exclude: () => new Set($("#items").value.split(/[,\n]+/).map((x) => key(x.replace(/\s*\([^)]*\)\s*$/, ""))).filter(Boolean)),
+      onPick: () => {},
+    });
     $("#start").addEventListener("change", () => { if (!$("#end").value || $("#end").value < $("#start").value) $("#end").value = $("#start").value; });
 
     $("#f").addEventListener("submit", async (e) => {
@@ -589,6 +593,7 @@
   async function addToInventory(list) {
     const fresh = list.filter((i) => !inInventory(i));
     if (!fresh.length) return toast(list.length > 1 ? "Those are all in your inventory already" : "Already in your inventory");
+    invCache = null;
     try { await write({ type: "insert", table: "closet_items", rows: fresh.map((i) => ({ id: newId(), name: i.name, qty: i.qty, note: i.note, category: i.category, kind: kindOf(i), purpose: purposeOf(i), owner_id: session.user.id })) }); }
     catch (err) { return fail(err); }
     T.inventory = [...(T.inventory || []), ...fresh.map((i) => key(i.name))]; cacheTrip();
@@ -853,6 +858,11 @@
       e.preventDefault(); const v = $("#addInput").value.trim(); if (!v) return;
       if (await addText(v)) $("#addInput").value = "";
     });
+    attachInventorySuggest($("#addInput"), {
+      above: true,
+      exclude: () => new Set(T.items.filter((i) => inList(i, targetList())).map((i) => key(i.name))),
+      onPick: (inv, { only }) => { if (!only) return; $("#addInput").value = ""; addFromInventory(inv); return "handled"; },
+    });
   }
 
   // Change several items at once (bag, type, work/personal)
@@ -911,6 +921,94 @@
   function pickPurpose(ids) {
     const one = ids.length === 1 ? T.items.find((i) => i.id === ids[0]) : null;
     choice(`${one ? one.name : ids.length + " items"}: work or personal?`, [["personal", "Personal"], ["work", "Work"]], one ? purposeOf(one) : null, (v) => patchItems(ids, { purpose: v }, `marked ${v}`));
+  }
+
+  // ───────────────────────── inventory suggestions while typing ─────────────────────────
+  let invCache = null;
+  async function inventoryList() {
+    if (invCache) return invCache;
+    try {
+      invCache = must(await sb.from("closet_items").select("name,qty,note,category,kind,purpose").eq("owner_id", session.user.id).order("name"));
+      store.set("inv", invCache);
+    } catch { invCache = store.get("inv", []); }
+    return invCache;
+  }
+  // Rank inventory items that contain what's being typed: start of name, then start of a word, then anywhere.
+  function matchInventory(q, list, exclude) {
+    q = key(q); if (!q) return [];
+    const out = [];
+    for (const it of list) {
+      const n = key(it.name); if (exclude.has(n)) continue;
+      const at = n.indexOf(q); if (at < 0) continue;
+      out.push({ it, at, rank: at === 0 ? 0 : /[\s\-/(]/.test(n[at - 1]) ? 1 : 2 });
+    }
+    return out.sort((a, b) => a.rank - b.rank || a.it.name.length - b.it.name.length || a.it.name.localeCompare(b.it.name)).slice(0, 6);
+  }
+  // Attach a suggestion list to an input or textarea. It suggests for the item being typed (the text after the
+  // last comma or new line). onPick(item, { only }) decides what happens; "only" is true when the field holds just that item.
+  function attachInventorySuggest(field, { above = false, exclude = () => new Set(), onPick }) {
+    if (!field || field.dataset.sugg) return; field.dataset.sugg = "1";
+    const wrap = document.createElement("div"); wrap.className = "isug-wrap" + (field.tagName === "TEXTAREA" ? " block" : "");
+    field.parentNode.insertBefore(wrap, field); wrap.append(field);
+    const box = document.createElement("div"); box.className = "isug" + (above ? " above" : ""); box.setAttribute("role", "listbox"); box.hidden = true;
+    (above && field.closest("form") || wrap).append(box);
+    field.setAttribute("aria-autocomplete", "list");
+    let hits = [], sel = -1, list = [];
+    inventoryList().then((l) => { list = l; });
+    const span = () => {
+      const end = field.selectionStart ?? field.value.length, before = field.value.slice(0, end);
+      const start = Math.max(before.lastIndexOf(","), before.lastIndexOf("\n")) + 1;
+      let stop = field.value.slice(end).search(/[,\n]/); stop = stop < 0 ? field.value.length : end + stop;
+      return { start, stop, text: field.value.slice(start, stop) };
+    };
+    const hide = () => { box.hidden = true; sel = -1; field.setAttribute("aria-expanded", "false"); };
+    const draw = () => {
+      if (!hits.length) return hide();
+      box.innerHTML = `<div class="isug-h">From your inventory</div>` + hits.map(({ it, at }, i) => {
+        const q = span().text.trim().length;
+        const nm = esc(it.name.slice(0, at)) + "<b>" + esc(it.name.slice(at, at + q)) + "</b>" + esc(it.name.slice(at + q));
+        const meta = [it.qty, it.category, it.purpose === "work" ? "Work" : ""].filter(Boolean).map(esc).join(" · ");
+        return `<button type="button" role="option" class="isug-o${i === sel ? " on" : ""}" data-i="${i}" aria-selected="${i === sel}"><span class="isug-n">${nm}</span>${meta ? `<span class="isug-m">${meta}</span>` : ""}</button>`;
+      }).join("");
+      box.hidden = false; field.setAttribute("aria-expanded", "true");
+    };
+    const update = () => { const t = span().text.trim(); hits = t ? matchInventory(t, list, exclude()) : []; sel = -1; draw(); };
+    const pick = (i) => {
+      const h = hits[i]; if (!h) return;
+      const sp = span(), only = !field.value.slice(0, sp.start).trim() && !field.value.slice(sp.stop).trim();
+      hide();
+      if (onPick(h.it, { only }) === "handled") return;
+      const label = h.it.qty ? `${h.it.name} (${h.it.qty})` : h.it.name;
+      const pre = field.value.slice(0, sp.start), lead = sp.start && !/\s$/.test(pre) ? " " : "";
+      const rest = field.value.slice(sp.stop).replace(/^[,\s]*/, "");
+      field.value = pre + lead + label + ", " + rest;
+      const caret = (pre + lead + label + ", ").length; field.focus(); field.setSelectionRange(caret, caret);
+    };
+    field.addEventListener("input", () => { if (!list.length) inventoryList().then((l) => { list = l; update(); }); else update(); });
+    field.addEventListener("keydown", (e) => {
+      if (box.hidden) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); sel = (sel + (e.key === "ArrowDown" ? 1 : -1) + hits.length) % hits.length; draw(); }
+      else if (e.key === "Enter" && sel >= 0) { e.preventDefault(); e.stopPropagation(); pick(sel); }
+      else if (e.key === "Tab" && hits.length) { e.preventDefault(); pick(sel >= 0 ? sel : 0); }
+      else if (e.key === "Escape") hide();
+    });
+    field.addEventListener("blur", () => setTimeout(hide, 150));
+    box.addEventListener("mousedown", (e) => e.preventDefault());
+    box.addEventListener("click", (e) => { const o = e.target.closest("[data-i]"); if (o) pick(+o.dataset.i); });
+  }
+
+  // Add an inventory item straight to the open trip: no smart sort needed, it already has a category and type.
+  async function addFromInventory(inv) {
+    const owner = targetList();
+    if (T.items.some((i) => inList(i, owner) && key(i.name) === key(inv.name))) return toast(`${inv.name} is already on this list`);
+    const same = T.items.filter((i) => inList(i, owner) && i.category === inv.category && i.bag);
+    const counts = {}; for (const i of same) counts[i.bag] = (counts[i.bag] || 0) + 1;
+    const bag = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || "";
+    const row = { id: newId(), trip_id: T.trip.id, personal_of: owner, name: inv.name, qty: inv.qty || "", note: inv.note || "", category: inv.category || "Other",
+      bag, kind: inv.kind || "gear", purpose: inv.purpose || "personal", packed: false, position: T.items.length };
+    T.items.push({ ...row, packed_by: null, created_at: new Date().toISOString() }); cacheTrip(); drawTrip();
+    toast(`Added ${inv.name} from your inventory`);
+    try { await write({ type: "insert", table: "items", rows: [row] }); } catch (e) { fail(e); }
   }
 
   async function addText(text) {
@@ -1276,6 +1374,7 @@
   // ───────────────────────── closet ─────────────────────────
   let closetTab = store.get("closetTab", "personal");
   async function renderCloset() {
+    invCache = null;
     const all = must(await sb.from("closet_items").select("*").order("category").order("name"));
     const tabOf = (i) => (i.purpose === "work" ? "work" : "personal");
     const items = all.filter((i) => tabOf(i) === closetTab);
@@ -1427,7 +1526,7 @@
       <h3 class="sec">Reminders</h3>
       <label class="check-row" style="margin-top:0"><input type="checkbox" id="remind"${me?.reminders === false ? "" : " checked"}><span class="grow">Email me the day before a trip<br><small class="muted">What's left to pack and what to grab last, sent around 9am your time.</small></span></label>
       <h3 class="sec">Smart sorting</h3>
-      <p class="hint" style="margin:0 4px">Each person gets ${cfg.dailyLimit || 25} smart sorts a day. Checking things off, editing and sharing never count.</p>
+      <p class="hint" style="margin:0 4px">Each person gets ${cfg.dailyLimit || 50} smart sorts a day, reset at midnight. Checking things off, editing and sharing never count.</p>
       <h3 class="sec">On your iPhone or iPad</h3>
       <p class="hint" style="margin:0 4px">In Safari, tap Share → <strong>Add to Home Screen</strong> to use Pack like an app.</p>
       <button class="secondary" id="out" style="margin-top:28px">Sign out</button>
