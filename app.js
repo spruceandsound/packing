@@ -258,13 +258,15 @@
   async function renderTripForm(tripId, templateId) {
     const editing = !!tripId;
     let trip = { name: "", destination: "", start_date: "", end_date: "", details: "", bags: [] };
-    let tpls = [], always = [], tpl = null;
+    let tpls = [], always = [], equipment = [], tpl = null;
     if (editing) trip = must(await sb.from("trips").select("*").eq("id", tripId).single());
     else {
       [tpls, always] = await Promise.all([
         sb.from("templates").select("id,name,bags,items").order("created_at", { ascending: false }).then(must),
-        sb.from("closet_items").select("name,qty,category").eq("always", true).then(must),
+        sb.from("closet_items").select("name,qty,category,always,purpose").then(must),
       ]);
+      equipment = always.filter((i) => i.purpose === "work" && !i.always);
+      always = always.filter((i) => i.always);
       tpl = tpls.find((t) => t.id === templateId) || null;
       if (tpl) trip.bags = [...(tpl.bags || [])];
     }
@@ -288,6 +290,7 @@
         ${tpls.length ? `<label class="f" for="tpl">Start from a template <small>(optional)</small></label>
           <select class="t" id="tpl"><option value="">None</option>${tpls.map((t) => `<option value="${t.id}"${tpl?.id === t.id ? " selected" : ""}>${esc(t.name)} (${(t.items || []).length} items)</option>`).join("")}</select>` : ""}
         ${always.length ? `<label class="check-row"><input type="checkbox" id="always" checked><span class="grow">Add my ${always.length} always-pack item${always.length === 1 ? "" : "s"} from the closet</span></label>` : ""}
+        ${equipment.length ? `<label class="check-row"><input type="checkbox" id="equip"><span class="grow">Bring my equipment (${equipment.length} item${equipment.length === 1 ? "" : "s"})</span></label>` : ""}
         <label class="f" for="items">Everything you're bringing</label>
         <textarea class="t" id="items" placeholder="passport, charger, 3 tshirts, toothbrush, jeans x2, rain jacket, camera + 2 batteries…"></textarea>
         <p class="hint">Any order, any format. Typos are fine.</p>`}
@@ -337,11 +340,13 @@
         const chosen = tpls.find((t) => t.id === $("#tpl")?.value);
         const parts = [$("#items").value.trim()];
         if (chosen) parts.push(chosen.items.map((i) => (i.qty ? `${i.name} (${i.qty})` : i.name)).join("\n"));
-        if ($("#always")?.checked) parts.push(always.map((i) => (i.qty ? `${i.name} (${i.qty})` : i.name)).join("\n"));
+        const workNames = new Set();
+        if ($("#always")?.checked) { parts.push(always.map((i) => (i.qty ? `${i.name} (${i.qty})` : i.name)).join("\n")); always.filter((i) => i.purpose === "work").forEach((i) => workNames.add(key(i.name))); }
+        if ($("#equip")?.checked) { parts.push(equipment.map((i) => (i.qty ? `${i.name} (${i.qty})` : i.name)).join("\n")); equipment.forEach((i) => workNames.add(key(i.name))); }
         const text = parts.filter(Boolean).join("\n");
         let weather = null;
         if (row.destination) { busy(btn, true, "Checking the weather…"); weather = await getWeather(created).catch(() => null); }
-        if (text) { busy(btn, true, "Sorting your list…"); await sortInto(created, text, [], weather); }
+        if (text) { busy(btn, true, "Sorting your list…"); await sortInto(created, text, [], weather, workNames); }
         go(`#/trip/${created.id}`);
       } catch (err) { busy(btn, false); fail(err); }
     });
@@ -355,7 +360,7 @@
   }
 
   // Sort raw text with Claude and insert the results. If sorting fails, keep the raw lines so nothing is lost.
-  async function sortInto(trip, text, existing, weather) {
+  async function sortInto(trip, text, existing, weather, workNames = new Set()) {
     let res;
     try {
       res = await api("/api/sort", {
@@ -372,7 +377,7 @@
     }
     const have = new Set(existing.map((i) => key(i.name)));
     const rows = res.items.filter((i) => !have.has(key(i.name)) && (have.add(key(i.name)), true))
-      .map((i, n) => ({ trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: i.purpose || "personal", position: existing.length + n }));
+      .map((i, n) => ({ trip_id: trip.id, name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", bag: i.bag || "", kind: i.kind || "gear", purpose: workNames.has(key(i.name)) ? "work" : i.purpose || "personal", position: existing.length + n }));
     if (rows.length) must(await sb.from("items").insert(rows));
     const allNames = new Set([...have, ...rows.map((r) => key(r.name))]);
     const prev = Array.isArray(trip.suggestions) ? trip.suggestions : [];
@@ -731,28 +736,59 @@
   }
 
   // ───────────────────────── closet ─────────────────────────
+  let closetTab = store.get("closetTab", "personal");
   async function renderCloset() {
-    const items = must(await sb.from("closet_items").select("*").order("category").order("name"));
+    const all = must(await sb.from("closet_items").select("*").order("category").order("name"));
+    const tabOf = (i) => (i.purpose === "work" ? "work" : "personal");
+    const items = all.filter((i) => tabOf(i) === closetTab);
     const groups = {};
     for (const i of items) (groups[i.category] ||= []).push(i);
     const alwaysN = items.filter((i) => i.always).length;
-    app.innerHTML = header({ title: "Closet", sub: "Gear you own and pack often. Mark “Always” to add it to every new trip." }) + `<main class="tabbed">
-      ${!items.length ? `<div class="empty"><strong>Your closet is empty</strong>Add things you always bring — chargers, meds, your camera kit — or save items from any trip.</div>` : ""}
-      ${alwaysN ? `<p class="hint" style="margin:0 4px 12px">${alwaysN} item${alwaysN === 1 ? "" : "s"} will be added to new trips.</p>` : ""}
+    const isEquip = closetTab === "work";
+    const n = (t) => all.filter((i) => tabOf(i) === t).length;
+    app.innerHTML = header({ title: "Closet", sub: "Things you own and pack often. Mark “Always” to add them to every new trip." }) + `<main class="tabbed">
+      <div class="seg wide" role="tablist" style="margin-bottom:14px">
+        <button role="tab" data-ctab="personal" class="${!isEquip ? "on" : ""}" aria-selected="${!isEquip}">Personal <small>${n("personal")}</small></button>
+        <button role="tab" data-ctab="work" class="${isEquip ? "on" : ""}" aria-selected="${isEquip}">Equipment <small>${n("work")}</small></button>
+      </div>
+      ${!items.length ? `<div class="empty"><strong>${isEquip ? "No equipment yet" : "Nothing here yet"}</strong>${isEquip
+        ? "Add the kit you bring for work — cameras, lenses, laptops, tools. When you plan a trip, you can bring it all with one tap."
+        : "Add things you always bring — chargers, meds, your favorite jacket — or save items from any trip."}</div>` : ""}
+      ${alwaysN ? `<p class="hint" style="margin:0 4px 12px">${alwaysN} item${alwaysN === 1 ? "" : "s"} here will be added to every new trip.</p>` : ""}
       ${Object.entries(groups).map(([c, its]) => `<section class="card cat"><h2>${esc(c)} <span>${its.length}</span></h2>
-        ${its.map((i) => `<div class="row"><span class="nm">${esc(i.name)}${i.note ? `<span class="note">${esc(i.note)}</span>` : ""}</span>
+        ${its.map((i) => `<div class="row"><button class="nm linkish" data-open="${i.id}">${esc(i.name)}${i.note ? `<span class="note">${esc(i.note)}</span>` : ""}</button>
           ${i.qty ? `<span class="qty">${esc(i.qty)}</span>` : ""}
           <button class="tog ${i.always ? "on" : ""}" data-tog="${i.id}" aria-pressed="${i.always}">Always</button>
           <button class="del" data-del="${i.id}" aria-label="Delete ${esc(i.name)}">✕</button></div>`).join("")}</section>`).join("")}
+      ${items.length ? `<p class="hint" style="margin:6px 4px">Tap an item to move it to ${isEquip ? "Personal" : "Equipment"} or change its type.</p>` : ""}
     </main>
-    <div class="add over-tabs"><form id="addForm"><input class="t" id="addInput" placeholder="Add gear… (any format)" autocomplete="off" enterkeyhint="send"><button id="addBtn" type="submit">Add</button></form></div>
+    <div class="add over-tabs"><form id="addForm"><input class="t" id="addInput" placeholder="${isEquip ? "Add equipment…" : "Add personal items…"} (any format)" autocomplete="off" enterkeyhint="send"><button id="addBtn" type="submit">Add</button></form></div>
     ${tabs("closet")}`;
+    $$("[data-ctab]").forEach((b) => b.addEventListener("click", () => { closetTab = b.dataset.ctab; store.set("closetTab", closetTab); renderCloset(); }));
     $("main").addEventListener("click", async (e) => {
       const t = e.target.closest("[data-tog]");
       if (t) { const it = items.find((x) => x.id === t.dataset.tog); it.always = !it.always; t.classList.toggle("on", it.always);
         const { error } = await sb.from("closet_items").update({ always: it.always }).eq("id", it.id); if (error) fail(error); return; }
       const d = e.target.closest("[data-del]");
-      if (d) { const { error } = await sb.from("closet_items").delete().eq("id", d.dataset.del); error ? fail(error) : renderCloset(); }
+      if (d) { const { error } = await sb.from("closet_items").delete().eq("id", d.dataset.del); error ? fail(error) : renderCloset(); return; }
+      const o = e.target.closest("[data-open]");
+      if (o) {
+        const it = items.find((x) => x.id === o.dataset.open); if (!it) return;
+        const other = isEquip ? "personal" : "work";
+        openSheet(`<h2>${esc(it.name)}</h2><div class="menu">
+          <button data-a="move">Move to ${isEquip ? "Personal" : "Equipment"}</button>
+          <hr>${KINDS.map(([k, l]) => `<button data-a="kind" data-k="${k}"${(it.kind || "gear") === k ? ' class="cur"' : ""}>${l}${(it.kind || "gear") === k ? " ✓" : ""}</button>`).join("")}
+          <hr><button data-a="close" style="font-weight:650">Cancel</button></div>`, async (ev) => {
+          const b = ev.target.closest("[data-a]"); if (!b) return;
+          closeSheet();
+          const patch = b.dataset.a === "move" ? { purpose: other } : b.dataset.a === "kind" ? { kind: b.dataset.k } : null;
+          if (!patch) return;
+          const { error } = await sb.from("closet_items").update(patch).eq("id", it.id);
+          if (error) return fail(error);
+          if (patch.purpose) toast(`Moved to ${isEquip ? "Personal" : "Equipment"}`);
+          renderCloset();
+        });
+      }
     });
     $("#addForm").addEventListener("submit", async (e) => {
       e.preventDefault(); const v = $("#addInput").value.trim(); if (!v) return;
@@ -760,14 +796,15 @@
       try {
         let rows;
         try {
-          const res = await api("/api/sort", { items: v, mode: "closet", categories: Object.keys(groups), have: items.map((i) => i.name) });
-          rows = res.items.map((i) => ({ name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", kind: i.kind || "gear", purpose: i.purpose || "personal" }));
+          const res = await api("/api/sort", { items: v, mode: "closet", categories: [...new Set(all.map((i) => i.category))], have: all.map((i) => i.name) });
+          rows = res.items.map((i) => ({ name: i.name, qty: i.qty || "", note: i.note || "", category: i.category || "Other", kind: i.kind || "gear" }));
         } catch (err) {
           if (err.status === 401) throw err;
           rows = v.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean).map((name) => ({ name: name.slice(0, 200), category: "Other" }));
         }
-        const have = new Set(items.map((i) => key(i.name)));
-        rows = rows.filter((r) => !have.has(key(r.name))).map((r) => ({ ...r, owner_id: session.user.id }));
+        const have = new Set(all.map((i) => key(i.name)));
+        // Whatever tab you're on decides personal vs equipment.
+        rows = rows.filter((r) => !have.has(key(r.name))).map((r) => ({ ...r, purpose: closetTab, owner_id: session.user.id }));
         if (rows.length) must(await sb.from("closet_items").insert(rows));
         renderCloset();
       } catch (err) { busy(btn, false); fail(err); }

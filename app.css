@@ -214,3 +214,5 @@ button.bagtag.empty{color:var(--muted);border-style:dashed;border-color:var(--li
 .add .pill{background:var(--card);color:var(--ink);padding:6px 14px;min-width:0;border:1px solid var(--line);font-weight:600;display:inline-block}
 select.t{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2366706A' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:40px}
 .add .selact{font-size:14px;white-space:nowrap;padding:12px 4px}
+.seg.wide button small{opacity:.7;font-weight:500;margin-left:2px}
+.row .linkish{flex:1;min-width:0;border:0;background:none;text-align:left;padding:0;font:inherit;color:inherit}
