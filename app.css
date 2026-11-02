@@ -446,3 +446,13 @@ button.share.paid{border-color:color-mix(in srgb,var(--ok) 50%,var(--line));colo
 .lp-theme svg{width:19px;height:19px}
 .auth-theme{position:fixed;top:calc(var(--safe-t) + 14px);right:16px;z-index:5;width:40px;height:40px;border-radius:12px;border:0;background:var(--pine-2);color:var(--on-pine);display:grid;place-items:center}
 .auth-theme svg{width:21px;height:21px}
+
+/* Venmo pay buttons */
+.vm-ic{width:15px;height:15px;flex:none;margin-right:6px}
+.row-btns{display:inline-flex;gap:6px;flex:none}
+.pill.venmo{display:inline-flex;align-items:center;background:#008CFF;border-color:#008CFF;color:#fff;font-weight:650}
+.pay-row{padding:0 16px 14px;margin-top:-4px}
+.venmo-btn{display:inline-flex;align-items:center;justify-content:center;width:100%;border:0;border-radius:12px;padding:11px 14px;background:#008CFF;color:#fff;font:650 15px/1.2 inherit;font-family:inherit;cursor:pointer}
+.venmo-btn:active,.pill.venmo:active{filter:brightness(.92)}
+.vhint{margin:8px 2px 0;font-size:13.5px}
+.vhint a{color:inherit;font-weight:600}

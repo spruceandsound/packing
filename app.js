@@ -20,6 +20,38 @@
   const today = () => new Date().toISOString().slice(0, 10);
   const CURRENCIES = ["USD", "CAD", "EUR", "GBP", "MXN", "AUD", "NZD", "JPY", "CHF", "SEK", "NOK", "DKK", "ISK", "THB", "SGD", "HKD", "KRW", "INR", "BRL", "ZAR"];
   const curDigits = (c) => { try { return new Intl.NumberFormat("en", { style: "currency", currency: c || "USD" }).resolvedOptions().maximumFractionDigits; } catch { return 2; } };
+  // Venmo: accepts "@name", "name", or a profile link (venmo.com/name, venmo.com/u/name, account.venmo.com/u/name).
+  // Returns the bare username, "" for empty, or null when it can't be read.
+  function parseVenmo(raw) {
+    let v = String(raw || "").trim();
+    if (!v) return "";
+    const m = v.match(/^(?:https?:\/\/)?(?:www\.|account\.)?venmo\.com\/(?:u\/)?([^/?#\s]+)/i);
+    if (m) v = m[1]; else if (/[/.]/.test(v) && !/^@/.test(v)) return null;
+    v = decodeURIComponent(v).replace(/^@/, "");
+    return /^[A-Za-z0-9_-]{2,30}$/.test(v) && !/^(code|u|account|pay|signup|login|paymentlinks)$/i.test(v) ? v : null;
+  }
+  const isPhone = () => /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  function venmoUrls(user, cents, note) {
+    const amt = (cents / 100).toFixed(2), n = encodeURIComponent(note.slice(0, 120));
+    return {
+      app: `venmo://paycharge?txn=pay&recipients=${encodeURIComponent(user)}&amount=${amt}&note=${n}`,
+      web: `https://venmo.com/${encodeURIComponent(user)}?txn=pay&amount=${amt}&note=${n}`,
+    };
+  }
+  // Opens the Venmo app with the payment filled in; falls back to Venmo's website if the app doesn't open.
+  function openVenmo(user, cents, note, onBack) {
+    const u = venmoUrls(user, cents, note);
+    let left = false;
+    const vis = () => { if (document.hidden) left = true; else if (left) { document.removeEventListener("visibilitychange", vis); onBack && setTimeout(onBack, 400); } };
+    document.addEventListener("visibilitychange", vis);
+    if (isPhone()) {
+      location.href = u.app;
+      setTimeout(() => { if (!left && !document.hidden) { document.removeEventListener("visibilitychange", vis); window.open(u.web, "_blank", "noopener"); onBack && setTimeout(onBack, 800); } }, 1600);
+    } else {
+      document.removeEventListener("visibilitychange", vis);
+      window.open(u.web, "_blank", "noopener"); onBack && setTimeout(onBack, 800);
+    }
+  }
   const money = (cents, c = "USD") => { const d = curDigits(c); try { return new Intl.NumberFormat(undefined, { style: "currency", currency: c || "USD", minimumFractionDigits: d === 0 ? 0 : (cents % 10 ** d ? d : 0), maximumFractionDigits: d }).format(cents / 10 ** d); } catch { return (cents / 100).toFixed(2); } };
   const parseMoney = (str, c = "USD") => { const v = parseFloat(String(str || "").replace(/[^0-9.,-]/g, "").replace(/,(?=\d{1,2}$)/, ".").replace(/,/g, "")); return Number.isFinite(v) && v > 0 ? Math.round(v * 10 ** curDigits(c)) : 0; };
   const COLORS = ["#2F7A5B", "#3E6E8E", "#9A5B2F", "#7A4E8C", "#B0533F", "#4F6B2F", "#2F5E7A"];
@@ -115,7 +147,7 @@
 
   async function loadMe() {
     if (me || !session) return me;
-    const { data } = await sb.from("profiles").select("id,email,display_name,timezone,reminders").eq("id", session.user.id).maybeSingle().catch(() => ({}));
+    const { data } = await sb.from("profiles").select("id,email,display_name,timezone,reminders,venmo").eq("id", session.user.id).maybeSingle().catch(() => ({}));
     me = data || store.get("me", null) || { id: session.user.id, email: session.user.email, display_name: "" };
     if (data) store.set("me", data);
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -608,6 +640,8 @@
   const targetList = () => (T.members.length > 1 && view.list === "group" ? null : session.user.id);
   const inList = (i, owner) => (owner ? i.personal_of === owner : !i.personal_of);
   const LAST = "\u0000last";
+  const firstName = (uid) => nameOf(uid) === "You" ? "you" : String(nameOf(uid)).split(/[\s@]/)[0];
+  const VENMO_ICON = `<svg class="vm-ic" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.5 3c.7 1.1 1 2.3 1 3.8 0 4.7-4 10.8-7.3 15.2H5.7L2.7 4.1l6.6-.6 1.6 12.8c1.5-2.4 3.3-6.2 3.3-8.8 0-1.4-.2-2.4-.6-3.2L19.5 3z"/></svg>`;
   const nameOf = (uid) => uid === session.user.id ? "You" : (profileOf(uid).display_name || profileOf(uid).email || "Someone");
   const KINDS = [["clothes", "Clothes"], ["gear", "Gear"], ["essentials", "Essentials"]];
   const kindOf = (i) => i.kind || "gear";
@@ -635,7 +669,7 @@
     ]);
     if (!trip) return null;
     const ids = members.map((m) => m.user_id);
-    const profiles = ids.length ? must(await sb.from("profiles").select("id,email,display_name").in("id", ids)) : [];
+    const profiles = ids.length ? must(await sb.from("profiles").select("id,email,display_name,venmo").in("id", ids)) : [];
     return applyPending({ trip, items, members, profiles, inventory: inv.map((i) => key(i.name)) });
   }
 
@@ -1260,6 +1294,12 @@
     const pairs = balances(EX);
     const myNet = pairs.reduce((a, p) => a + (p.to === me_ ? p.cents : p.from === me_ ? -p.cents : 0), 0);
     const scrollY = window.scrollY;
+    const canVenmo = (uid) => cur === "USD" && !!profileOf(uid).venmo;
+    const owedBy = new Set(pairs.filter((p) => p.from === me_).map((p) => p.to));
+    const noVenmo = [...owedBy].filter((u) => !profileOf(u).venmo);
+    const venmoHint = cur !== "USD" || !shared ? ""
+      : !me?.venmo && pairs.some((p) => p.to === me_) ? `<p class="hint vhint">Add your Venmo on the <a href="#/account">You</a> tab so people can pay you back in one tap.</p>`
+      : noVenmo.length ? `<p class="hint vhint">${esc(noVenmo.map(firstName).join(" and "))} ${noVenmo.length > 1 ? "haven't" : "hasn't"} added Venmo yet, so there's no pay button for them.</p>` : "";
     const byDay = new Map();
     for (const e of list) { const d = e.spent_on || today(); if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(e); }
 
@@ -1274,7 +1314,8 @@
         <div class="bal-head">${myNet > 0 ? `You're owed <b>${esc(money(myNet, cur))}</b>` : myNet < 0 ? `You owe <b>${esc(money(-myNet, cur))}</b>` : list.length ? "You're all square ✓" : "No expenses yet"}</div>
         ${pairs.map((p, n) => `<div class="row"><span class="avs">${avatar(profileOf(p.from))}${avatar(profileOf(p.to))}</span>
           <span class="nm">${p.from === me_ ? `You owe ${esc(nameOf(p.to))}` : p.to === me_ ? `${esc(nameOf(p.from))} owes you` : `${esc(nameOf(p.from))} owes ${esc(nameOf(p.to))}`} <b>${esc(money(p.cents, cur))}</b></span>
-          <button class="pill" data-settle="${n}">Paid back</button></div>`).join("")}
+          <span class="row-btns">${p.from === me_ && canVenmo(p.to) ? `<button class="pill venmo" data-vpair="${n}">${VENMO_ICON}Pay</button>` : ""}<button class="pill" data-settle="${n}">Paid back</button></span></div>`).join("")}
+        ${venmoHint}
       </section>` : `<p class="hint" style="margin:0 4px 12px">Share this trip to split costs. Pack keeps a running tally of who owes whom.</p>`}
       ${list.length ? "" : `<div class="empty"><strong>No expenses yet</strong>Log coffees, meals, gas, campsites, whoever paid. Pack splits them and keeps track of who owes whom.</div>`}
       ${[...byDay.entries()].map(([d, es]) => `<h3 class="sec">${esc(fmtDate(d, { weekday: "short", month: "short", day: "numeric" }))}</h3>
@@ -1285,6 +1326,8 @@
           ${shared && (e.expense_shares || []).length ? `<div class="shares">${e.expense_shares.map((sh) => sh.user_id === e.paid_by
             ? `<span class="share self">${avatar(profileOf(sh.user_id), "sm")}${esc(sh.user_id === me_ ? "Your share" : nameOf(sh.user_id) + "'s share")} ${esc(money(sh.amount_cents, cur))}</span>`
             : `<button class="share${sh.paid_back ? " paid" : ""}" data-share="${e.id}|${sh.user_id}" aria-pressed="${sh.paid_back}">${avatar(profileOf(sh.user_id), "sm")}${sh.user_id === me_ ? (sh.paid_back ? `You paid back ${esc(money(sh.amount_cents, cur))} ✓` : `You owe ${esc(money(sh.amount_cents, cur))}`) : (sh.paid_back ? `${esc(nameOf(sh.user_id))} paid back ${esc(money(sh.amount_cents, cur))} ✓` : `${esc(nameOf(sh.user_id))} owes ${esc(money(sh.amount_cents, cur))}`)}</button>`).join("")}</div>` : ""}
+          ${shared && cur === "USD" ? (() => { const sh = (e.expense_shares || []).find((x) => x.user_id === me_); return sh && e.paid_by !== me_ && !sh.paid_back && sh.amount_cents > 0 && canVenmo(e.paid_by)
+            ? `<div class="pay-row"><button class="venmo-btn" data-vexp="${e.id}">${VENMO_ICON}Pay ${esc(firstName(e.paid_by))} ${esc(money(sh.amount_cents, cur))} on Venmo</button></div>` : ""; })() : ""}
         </section>`).join("")}`).join("")}
       ${shared && list.length ? `<p class="hint" style="margin:10px 4px">Tap someone's share to mark it paid back. Balances update right away.</p>` : ""}
     </main>
@@ -1299,6 +1342,29 @@
       sh.paid_back = !sh.paid_back; cacheEx(); drawExpenses();
       try { await write({ type: "update", table: "expense_shares", eq: { expense_id: eid, user_id: uid }, patch: { paid_back: sh.paid_back } }); }
       catch (err) { sh.paid_back = !sh.paid_back; cacheEx(); drawExpenses(); fail(err); }
+    }));
+    const markPaid = async (keys, label) => {
+      if (!keys.length || !confirm(`${label}\n\nMark it as paid back in Pack?`)) return;
+      for (const e of EX.expenses) for (const sh of e.expense_shares || []) if (keys.some((k) => k.expense_id === e.id && k.user_id === sh.user_id)) sh.paid_back = true;
+      cacheEx(); if (location.hash === `#/trip/${T.trip.id}/expenses`) drawExpenses();
+      try { for (const k of keys) await write({ type: "update", table: "expense_shares", eq: k, patch: { paid_back: true } }); toast("Marked as paid back"); }
+      catch (err) { fail(err); }
+    };
+    $$("[data-vexp]").forEach((b) => b.addEventListener("click", () => {
+      const e = EX.expenses.find((x) => x.id === b.dataset.vexp); const sh = e?.expense_shares.find((x) => x.user_id === me_); if (!sh) return;
+      const to = profileOf(e.paid_by);
+      openVenmo(to.venmo, sh.amount_cents, `${e.description} · ${trip.name}`, () =>
+        markPaid([{ expense_id: e.id, user_id: me_ }], `Did you send ${firstName(e.paid_by)} ${money(sh.amount_cents, cur)} for ${e.description}?`));
+    }));
+    $$("[data-vpair]").forEach((b) => b.addEventListener("click", () => {
+      const pr = pairs[+b.dataset.vpair];
+      const keys = [];
+      for (const e of EX.expenses) for (const sh of e.expense_shares || []) {
+        if (sh.paid_back || sh.user_id === e.paid_by) continue;
+        if ((sh.user_id === pr.from && e.paid_by === pr.to) || (sh.user_id === pr.to && e.paid_by === pr.from)) keys.push({ expense_id: e.id, user_id: sh.user_id });
+      }
+      openVenmo(profileOf(pr.to).venmo, pr.cents, `${trip.name} · settling up (Pack)`, () =>
+        markPaid(keys, `Did you send ${firstName(pr.to)} ${money(pr.cents, cur)}?`));
     }));
     $$("[data-settle]").forEach((b) => b.addEventListener("click", async () => {
       const pr = pairs[+b.dataset.settle];
@@ -1546,6 +1612,11 @@
       <form id="nf"><label class="f" for="dn">Your name <small>(shown to people you pack with)</small></label>
         <input class="t" id="dn" value="${esc(me?.display_name || "")}" maxlength="60">
         <button class="secondary" type="submit">Save name</button></form>
+      <h3 class="sec">Venmo</h3>
+      <form id="vf"><label class="f" for="vm">Username or profile link <small>(so trip-mates can pay you back in one tap)</small></label>
+        <input class="t" id="vm" value="${me?.venmo ? "@" + esc(me.venmo) : ""}" placeholder="@your-name or venmo.com/u/your-name" maxlength="120" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url">
+        <p class="hint" id="vmerr" role="alert" style="margin:6px 4px 0"></p>
+        <button class="secondary" type="submit">${me?.venmo ? "Save Venmo" : "Add Venmo"}</button></form>
       <h3 class="sec">Appearance</h3>
       <div class="seg wide" role="group" aria-label="Appearance">${[["system", "Match system"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) => `<button type="button" data-theme-pick="${k}" class="${themePref() === k ? "on" : ""}">${l}</button>`).join("")}</div>
       <h3 class="sec">Reminders</h3>
@@ -1562,6 +1633,14 @@
         const { error } = await sb.from("profiles").update({ display_name: name }).eq("id", session.user.id);
         if (error) return fail(error);
         me.display_name = name; toast("Saved"); renderAccount();
+      });
+      $("#vf").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const v = parseVenmo($("#vm").value), err = $("#vmerr");
+        if (v === null) { err.style.color = "var(--err)"; err.textContent = "That doesn't look like a Venmo username. Try @your-name, or copy the link from your Venmo profile."; return; }
+        const { error } = await sb.from("profiles").update({ venmo: v || null }).eq("id", session.user.id);
+        if (error) return fail(error);
+        err.textContent = ""; me = { ...(me || { id: session.user.id }), venmo: v || null }; store.set("me", me); toast(v ? `Saved @${v}` : "Venmo removed"); renderAccount();
       });
       $("#remind").addEventListener("change", async (e) => {
         const on = e.target.checked;

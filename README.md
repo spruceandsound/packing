@@ -42,6 +42,13 @@ encrypted blobs (safe in this public repo). The key is stored only in the `app_s
 handed to admins by the `content_key()` function (`supabase/07-content-calendar.sql`); the page
 decrypts in the browser. "Posted" check marks are saved in `content_posted`.
 
+## Venmo
+
+People can add a Venmo username or profile link on the You tab (`profiles.venmo`, `supabase/09-venmo.sql`).
+On a trip's Expenses tab, anyone who owes a share sees "Pay … on Venmo" (per expense, and "Pay" on each
+settle-up row). Phones open the Venmo app with the recipient, amount and note filled in, falling back to
+venmo.com; computers open venmo.com. Coming back to Pack offers to mark the share paid back. USD trips only.
+
 ## Supabase settings
 
 - Authentication → URL Configuration: Site URL `https://pack.spruceandsound.com`,
