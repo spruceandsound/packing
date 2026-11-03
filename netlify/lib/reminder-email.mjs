@@ -31,7 +31,8 @@ export function buildReminder(r) {
     "",
     `Open your list: ${url}`,
     "",
-    "You're getting this because trip reminders are on. Turn them off in Pack → You.",
+    "You're getting this because trip reminders are on. Turn them off in Pack → You: https://pack.spruceandsound.com/#/account",
+    "Pack by Spruce & Sound · 203 Riverwalk Dr, Lynden, WA 98264 · Privacy: https://pack.spruceandsound.com/privacy",
   ].filter((l) => l !== "").join("\n").replace(/\n{3,}/g, "\n\n");
 
   const html = `<!doctype html><html><body style="margin:0;background:#F6F1E7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1E2622">
@@ -51,7 +52,7 @@ export function buildReminder(r) {
   ${r.weather_summary ? `<p style="margin:0 0 18px;font-size:14px;color:#66706A">${esc(r.weather_summary)}</p>` : ""}
   <a href="${url}" style="display:inline-block;background:#1F3D34;color:#F4ECDC;text-decoration:none;font-weight:700;padding:13px 22px;border-radius:12px">Open your list</a>
 </td></tr>
-<tr><td style="padding:16px 24px;border-top:1px solid #E0D8C8;font-size:12px;color:#66706A">You're getting this because trip reminders are on. Turn them off in Pack → You.</td></tr>
+<tr><td style="padding:16px 24px;border-top:1px solid #E0D8C8;font-size:12px;line-height:1.5;color:#66706A">You're getting this because trip reminders are on. <a href="https://pack.spruceandsound.com/#/account" style="color:#66706A">Turn them off</a> in Pack → You.<br>Pack by Spruce &amp; Sound · 203 Riverwalk Dr, Lynden, WA 98264 · <a href="https://pack.spruceandsound.com/privacy" style="color:#66706A">Privacy</a></td></tr>
 </table></td></tr></table></body></html>`;
   return { subject, text, html };
 }

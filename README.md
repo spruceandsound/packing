@@ -49,6 +49,16 @@ On a trip's Expenses tab, anyone who owes a share sees "Pay … on Venmo" (per e
 settle-up row). Phones open the Venmo app with the recipient, amount and note filled in, falling back to
 venmo.com; computers open venmo.com. Coming back to Pack offers to mark the share paid back. USD trips only.
 
+## Policies and account controls
+
+- `/privacy` (privacy.html) and `/terms` (terms.html), styled by legal.css; linked from the landing footer,
+  sign-in screen, You tab and reminder emails. Update the "Last updated" date when you change them.
+- `/error` (error.html): shown when Pack can't load (server timeout or offline with nothing cached).
+- You tab → Download my data (JSON, built in the browser) and Delete account (`POST /api/delete-account`,
+  which runs `prepare_account_deletion` from `supabase/10-account-deletion.sql` to hand shared trips to
+  the next member, then deletes the sign-in, cascading everything else).
+- `/.well-known/security.txt` for security reports.
+
 ## Supabase settings
 
 - Authentication → URL Configuration: Site URL `https://pack.spruceandsound.com`,

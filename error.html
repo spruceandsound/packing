@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex, nofollow">
+<title>Pack is having trouble · Pack</title>
+<meta name="theme-color" content="#1F3D34">
+<link rel="icon" href="/favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<script src="/theme.js"></script>
+<style>
+  :root{color-scheme:light dark;--pine:#1F3D34;--on-pine:#F4ECDC;--bg:#F6F1E7;--card:#FFFDF8;--ink:#1E2622;--muted:#66706A;--line:#E0D8C8;--amber:#E8A84C}
+  @media (prefers-color-scheme:light){:root:not([data-theme="dark"]){color-scheme:light}}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#121815;--card:#1A221E;--ink:#ECE8DE;--muted:#A2ACA5;--line:#2D3833}}
+  :root[data-theme="light"]{color-scheme:only light}
+  :root[data-theme="dark"]{color-scheme:dark;--bg:#121815;--card:#1A221E;--ink:#ECE8DE;--muted:#A2ACA5;--line:#2D3833}
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink)}
+  body{font:400 17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+  header{background:var(--pine);color:var(--on-pine);padding:calc(env(safe-area-inset-top,0px) + 14px) 16px 14px}
+  header a{display:inline-flex;align-items:center;gap:10px;color:inherit;text-decoration:none;font:700 20px/1 ui-rounded,-apple-system,system-ui,sans-serif}
+  header img{width:32px;height:32px;border-radius:8px}
+  main{flex:1;display:grid;place-items:center;padding:40px 20px calc(env(safe-area-inset-bottom,0px) + 40px)}
+  .box{max-width:440px;text-align:center}
+  .tag{display:inline-block;margin-bottom:22px;font-weight:700;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--pine);background:var(--amber);border-radius:99px;padding:6px 12px}
+  .icon{width:120px;height:120px;margin:0 auto 26px;border-radius:30px;background:var(--card);border:1px solid var(--line);display:grid;place-items:center}
+  .icon svg{width:64px;height:64px;color:var(--pine)}
+  h1{font:800 clamp(30px,7vw,40px)/1.08 ui-rounded,-apple-system,system-ui,sans-serif;letter-spacing:-.02em;margin:0 0 12px}
+  p{color:var(--muted);margin:0 0 28px}
+  .go{display:inline-flex;align-items:center;justify-content:center;width:100%;max-width:320px;padding:15px 20px;border-radius:12px;background:var(--pine);color:var(--on-pine);font-weight:700;text-decoration:none}
+  .small{display:block;margin-top:16px;font-size:14px;color:var(--muted)}
+  .small a{color:inherit}
+  :root[data-theme="dark"] .icon svg{color:var(--amber)} :root[data-theme="dark"] .go{background:var(--amber);color:#2b1d07}
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .icon svg{color:var(--amber)}:root:not([data-theme="light"]) .go{background:var(--amber);color:#2b1d07}}
+</style>
+</head>
+<body>
+<header><a href="/"><img src="/apple-touch-icon.png" alt="">Pack</a></header>
+<main>
+  <div class="box">
+    <div class="icon" aria-hidden="true">
+      <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="8" y="18" width="48" height="36" rx="7"/><path d="M24 18v-6a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v6"/><path d="M32 28v10"/><path d="M32 45v.5"/>
+      </svg>
+    </div>
+    <span class="tag">Hang tight</span>
+    <h1>Pack is having trouble loading</h1>
+    <p>Our server didn't answer in time, or you're offline. Your lists are safe. Give it a minute and try again.</p>
+    <a class="go" href="/">Try again</a>
+    <span class="small">Still stuck? Email <a href="mailto:hello@spruceandsound.com">hello@spruceandsound.com</a></span>
+  </div>
+</main>
+</body>
+</html>
