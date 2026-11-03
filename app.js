@@ -63,6 +63,7 @@
     sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>',
     moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7z"/></svg>',
     back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+    laundry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 10h17l-1.7 9.1a2 2 0 0 1-2 1.6H7.2a2 2 0 0 1-2-1.6z"/><path d="M8 10l3-5.5M16 10l-3-5.5"/><path d="M9 14v3M12 14v3M15 14v3"/></svg>',
     phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M12 9v6M9 12h6"/></svg>',
     more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
     plus: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
@@ -692,7 +693,7 @@
   }
 
   // ───────────────────────── one trip ─────────────────────────
-  const view = { group: store.get("group", "category"), hide: false, kind: "all", purpose: store.get("purpose", "all"), who: store.get("who", "all"), list: store.get("list", "mine"), select: false, picked: new Set() };
+  const view = { group: store.get("group", "category"), hide: false, kind: "all", purpose: store.get("purpose", "all"), who: store.get("who", "all"), list: store.get("list", "mine"), select: false, picked: new Set(), laundry: false };
   const GROUPMINE = "\u0000groupmine";
   // Which list new items go to: your own list, or the shared group list.
   const targetList = () => (T.members.length > 1 && view.list === "group" ? null : session.user.id);
@@ -837,7 +838,9 @@
     const hasWork = items.some((i) => purposeOf(i) === "work");
     const whoOk = (i) => !onGroup || view.who === "all" || (view.who === "mine" ? i.assigned_to === me_ : !i.assigned_to);
     const inPurpose = items.filter((i) => (view.purpose === "all" || purposeOf(i) === view.purpose) && whoOk(i));
-    const shown = inPurpose.filter((i) => view.kind === "all" || kindOf(i) === view.kind);
+    const laundryN = inPurpose.filter((i) => i.laundry && (view.kind === "all" || kindOf(i) === view.kind)).length;
+    if (view.laundry && !items.some((i) => i.laundry)) view.laundry = false;
+    const shown = inPurpose.filter((i) => (view.kind === "all" || kindOf(i) === view.kind) && (!view.laundry || i.laundry));
     const listStat = (arr) => `${arr.filter((i) => i.packed).length}/${arr.length}`;
 
     const groupOf = (i) => (shared && !onGroup && !i.personal_of) ? GROUPMINE : (!byBag && i.pack_last) ? LAST : byBag ? bagOf(i) : byPerson ? (i.assigned_to || "") : i.category || "Other";
@@ -886,12 +889,14 @@
         <div class="seg" role="group" aria-label="Group by"><button class="${!byBag && !byPerson ? "on" : ""}" data-group="category">Category</button><button class="${byBag ? "on" : ""}" data-group="bag">Bag</button>${onGroup ? `<button class="${byPerson ? "on" : ""}" data-group="person">Person</button>` : ""}</div>
       </div>
       <div class="toolbar">
-        <button class="pill ${view.hide ? "on" : ""}" id="hideBtn">Hide packed</button><span class="spacer"></span>
+        <button class="pill ${view.hide ? "on" : ""}" id="hideBtn">Hide packed</button>
+        <button class="pill laundry-f ${view.laundry ? "on" : ""}" id="laundryBtn" aria-pressed="${view.laundry}">${ICON.laundry}Laundry <small>${laundryN}</small></button><span class="spacer"></span>
         <button class="pill ${view.select ? "on" : ""}" id="selBtn">${view.select ? "Done" : "Select"}</button>
       </div>
+      ${view.laundry ? `<p class="hint laundry-hint">${ICON.laundry}<span>Showing your laundry list: things to wash${trip.end_date && trip.end_date < today() ? "" : " before you go"}. Tap the basket on an item to take it off.</span></p>` : ""}
       ${byBag && !trip.bags.length ? `<button class="card hintcard" id="addBagHint">No bags on this trip yet. <strong>Add bags →</strong></button>` : ""}
       ${view.purpose === "work" && !hasWork ? `<p class="hint" style="margin:0 4px 14px">Nothing is marked as work yet. Tap Select, choose items, then “Work / Personal”.</p>` : ""}
-      ${sugg.length ? `<div class="sugg"><p>You might also want:</p><div class="chips">${sugg.map((s, i) => `<button class="chip dash" data-sug="${i}"><span>+ ${esc(s.name)}</span>${s.why ? `<small>${esc(s.why)}</small>` : ""}</button>`).join("")}</div></div>` : ""}
+      ${sugg.length && !view.laundry ? `<div class="sugg"><p>You might also want:</p><div class="chips">${sugg.map((s, i) => `<button class="chip dash" data-sug="${i}"><span>+ ${esc(s.name)}</span>${s.why ? `<small>${esc(s.why)}</small>` : ""}</button>`).join("")}</div></div>` : ""}
       <div id="groups" class="${view.select ? "selecting" : ""}">${names.map((g) => `<section class="card cat${g === LAST ? " lastcat" : ""}"><h2>${esc(groupLabel(g))} ${!byBag && g === "Unsorted" && navigator.onLine ? `<button class="pill sortnow" id="sortNow">Sort these</button>` : ""}<span>${counts(g)}</span></h2>${g === LAST ? `<p class="lasthint">Things you'll use until you walk out the door.</p>` : ""}
         ${groups.get(g).map((i) => `<div class="item${i.packed ? " on" : ""}${view.picked.has(i.id) ? " picked" : ""}" data-id="${i.id}">
           ${view.select
@@ -904,15 +909,16 @@
             ${byBag && i.pack_last ? `<span class="lasttag">Last</span>` : ""}
             ${onGroup && i.assigned_to && !byPerson ? avatar(profileOf(i.assigned_to), "by who") : shared && i.packed && i.packed_by && i.packed_by !== session.user.id ? avatar(profileOf(i.packed_by), "by") : ""}
           </button>
+          ${!view.select ? `<button class="wash${i.laundry ? " on" : ""}" data-wash="${i.id}" aria-pressed="${!!i.laundry}" aria-label="${i.laundry ? "Take " + esc(i.name) + " off the laundry list" : "Add " + esc(i.name) + " to the laundry list"}" title="${i.laundry ? "On the laundry list" : "Add to laundry"}">${ICON.laundry}</button>` : ""}
           ${!byBag && !view.select ? `<button class="bagtag${i.bag ? "" : " empty"}" data-bag="${i.id}" aria-label="Bag for ${esc(i.name)}">${i.bag ? esc(i.bag) : "+ Bag"}</button>` : ""}
         </div>`).join("")}</section>`).join("") ||
-        `<div class="empty"><strong>${n && !shown.length ? "Nothing matches" : n ? "All packed 🎉" : "Nothing here yet"}</strong>${n && !shown.length ? "Try a different filter." : n ? "Turn off “Hide packed” to see everything." : "Type or paste items below and Pack will sort them."}</div>`}</div>
+        `<div class="empty"><strong>${view.laundry && !shown.length ? "Laundry's done 🎉" : n && !shown.length ? "Nothing matches" : n ? "All packed 🎉" : "Nothing here yet"}</strong>${view.laundry && !shown.length ? "Nothing left on the laundry list here. Turn off “Hide packed” or try another filter." : n && !shown.length ? "Try a different filter." : n ? "Turn off “Hide packed” to see everything." : "Type or paste items below and Pack will sort them."}</div>`}</div>
     </main>
     ${view.select
       ? `<div class="add selbar"><div class="selrow"><span class="muted" style="font-size:14px">${view.picked.size ? `${view.picked.size} selected` : "Tap items to select"}</span>
           <button class="pill" id="selAll">${view.picked.size === shown.length && shown.length ? "None" : "All"}</button></div>
         <div class="selgrid">
-          ${[["bag", "Move to bag"], ...(onGroup ? [["who", "Assign"]] : []), ...(shared ? [["list", onGroup ? "To my list" : "To group list"]] : []), ["last", "Pack last"], ["kind", "Type"], ["purpose", "Work / Personal"], ["inv", "To inventory"]]
+          ${[["bag", "Move to bag"], ...(onGroup ? [["who", "Assign"]] : []), ...(shared ? [["list", onGroup ? "To my list" : "To group list"]] : []), ["last", "Pack last"], ["laundry", "Laundry"], ["kind", "Type"], ["purpose", "Work / Personal"], ["inv", "To inventory"]]
             .map(([a, l]) => `<button class="selact${a === "inv" ? " alt" : ""}" data-act="${a}" ${view.picked.size ? "" : "disabled"}>${l}</button>`).join("")}
         </div></div>`
       : `<div class="add"><form id="addForm"><input class="t" id="addInput" placeholder="${shared ? (onGroup ? "Add to the group list…" : "Add to my list…") : "Add items… (any format)"}" autocomplete="off" enterkeyhint="send"><button type="submit" id="addBtn">Add</button></form></div>`}`;
@@ -925,6 +931,10 @@
     $$("[data-who]").forEach((b) => b.addEventListener("click", () => { view.who = b.dataset.who; store.set("who", view.who); drawTrip(); }));
     $$("[data-list]").forEach((b) => b.addEventListener("click", () => { view.list = b.dataset.list; store.set("list", view.list); view.picked.clear(); if (view.group === "person" && view.list !== "group") view.group = "category"; drawTrip(); }));
     $("#hideBtn").addEventListener("click", () => { view.hide = !view.hide; drawTrip(); });
+    $("#laundryBtn").addEventListener("click", () => {
+      if (!view.laundry && !items.some((i) => i.laundry)) return toast("Nothing on the laundry list yet. Tap the basket on an item to add it.");
+      view.laundry = !view.laundry; drawTrip();
+    });
     $("#sortNow")?.addEventListener("click", (e) => { busy(e.currentTarget, true); sortUnsorted(); });
     $("#selBtn").addEventListener("click", () => { view.select = !view.select; view.picked.clear(); drawTrip(); });
     $("#addBagHint")?.addEventListener("click", () => newBag().then((b) => b && drawTrip()));
@@ -940,6 +950,7 @@
       if (b.dataset.act === "who") pickPerson(ids);
       if (b.dataset.act === "list") moveToList(ids, onGroup ? me_ : null);
       if (b.dataset.act === "last") { const allLast = ids.every((id) => T.items.find((i) => i.id === id)?.pack_last); patchItems(ids, { pack_last: !allLast }, allLast ? "taken out of Pack last" : "moved to Pack last"); }
+      if (b.dataset.act === "laundry") { const allL = ids.every((id) => T.items.find((i) => i.id === id)?.laundry); patchItems(ids, { laundry: !allL }, allL ? "taken off the laundry list" : "added to the laundry list"); }
       if (b.dataset.act === "inv") { const list = T.items.filter((i) => view.picked.has(i.id)); view.picked.clear(); view.select = false; drawTrip(); addToInventory(list); }
     }));
     $("#shareBtn").addEventListener("click", shareTrip);
@@ -947,6 +958,15 @@
     $("#groups").addEventListener("click", async (e) => {
       const pk = e.target.closest("[data-pick]");
       if (pk) { const id = pk.dataset.pick; view.picked.has(id) ? view.picked.delete(id) : view.picked.add(id); drawTrip(); return; }
+      const w = e.target.closest("[data-wash]");
+      if (w) {
+        const it = T.items.find((x) => x.id === w.dataset.wash); if (!it) return;
+        it.laundry = !it.laundry; drawTrip(); cacheTrip();
+        if (!view.laundry) toast(it.laundry ? `${it.name} added to laundry` : `${it.name} taken off laundry`, 1800);
+        try { await write({ type: "update", table: "items", ids: [it.id], patch: { laundry: it.laundry } }); }
+        catch (err) { it.laundry = !it.laundry; cacheTrip(); drawTrip(); fail(err); }
+        return;
+      }
       const bg = e.target.closest("[data-bag]");
       if (bg) return pickBag([bg.dataset.bag]);
       const t = e.target.closest("[data-tick]");
@@ -1180,6 +1200,7 @@
       ${T.members.length > 1 ? `<label class="f">List</label><div class="seg wide" id="elist">${[["mine", "👤 My list"], ["group", "👥 Group list"]].map(([k, l]) => `<button type="button" data-k="${k}" class="${(it.personal_of ? "mine" : "group") === k ? "on" : ""}">${l}</button>`).join("")}</div>` : ""}
       ${T.members.length > 1 ? `<div id="ewrap"${it.personal_of ? ' class="hidden"' : ""}><label class="f" for="ew">Who's bringing it</label><select class="t" id="ew"><option value="">Anyone</option>${T.members.map((m) => `<option value="${m.user_id}"${m.user_id === it.assigned_to ? " selected" : ""}>${esc(m.user_id === session.user.id ? "Me" : nameOf(m.user_id))}</option>`).join("")}</select></div>` : ""}
       <label class="check-row"><input type="checkbox" id="el"${it.pack_last ? " checked" : ""}><span class="grow">Pack last <small class="muted">(you'll use it until you leave)</small></span></label>
+      <label class="check-row"><input type="checkbox" id="elau"${it.laundry ? " checked" : ""}><span class="grow">On the laundry list <small class="muted">(needs washing)</small></span></label>
       <label class="f" for="eb">Bag</label><select class="t" id="eb"><option value="">No bag</option>${T.trip.bags.map((b) => `<option${key(b) === key(it.bag) ? " selected" : ""}>${esc(b)}</option>`).join("")}<option value="__new">+ New bag…</option></select>
       <label class="f" for="eo">Note</label><input class="t" id="eo" value="${esc(it.note)}" maxlength="200">
       <button class="primary" type="submit">Save</button>
@@ -1200,7 +1221,7 @@
       e.preventDefault();
       const patch = { name: $("#en").value.trim(), qty: $("#eq").value.trim(), category: $("#ec").value.trim() || "Other", note: $("#eo").value.trim(),
         bag: $("#eb").value === "__new" ? it.bag : $("#eb").value, kind: $("#ek .on")?.dataset.k || kindOf(it), purpose: $("#ep .on")?.dataset.k || purposeOf(it),
-        pack_last: $("#el").checked,
+        pack_last: $("#el").checked, laundry: $("#elau").checked,
         ...($("#elist") ? ($("#elist .on")?.dataset.k === "mine" ? { personal_of: session.user.id, assigned_to: null } : { personal_of: null, assigned_to: $("#ew")?.value || null }) : {}) };
       closeSheet(); Object.assign(it, patch); cacheTrip(); drawTrip();
       write({ type: "update", table: "items", ids: [it.id], patch }).catch(fail);

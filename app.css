@@ -488,3 +488,15 @@ button.share.paid{border-color:var(--line);border-color:color-mix(in srgb,var(--
 .auth .fine a{color:inherit}
 .del-list{margin:0 0 12px;padding-left:22px;line-height:1.5}
 .del-list li{margin:0 0 4px}
+
+/* laundry list */
+.wash{flex:none;width:32px;height:32px;margin-left:-4px;border:0;border-radius:9px;background:none;color:var(--muted);opacity:.4;display:grid;place-items:center;cursor:pointer}
+.wash svg{width:19px;height:19px}
+.wash:hover{opacity:.75}
+.wash.on{opacity:1;color:var(--sky);background:var(--sunk);background:color-mix(in srgb,var(--sky) 14%,transparent)}
+.laundry-f{display:inline-flex;align-items:center;gap:6px}
+.laundry-f svg{width:16px;height:16px}
+.laundry-f small{color:var(--muted);font-weight:600}
+.pill.laundry-f.on small{color:inherit;opacity:.8}
+.laundry-hint{display:flex;gap:8px;align-items:flex-start;margin:0 4px 12px}
+.laundry-hint svg{flex:none;width:17px;height:17px;color:var(--sky);margin-top:2px}
