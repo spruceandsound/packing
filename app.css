@@ -481,3 +481,10 @@ button.share.paid{border-color:var(--line);border-color:color-mix(in srgb,var(--
 :root[data-theme="dark"] .a2hs-add{background:var(--amber);border-color:var(--amber);color:#2b1d07}
 .lp-a2hs{display:inline-flex;align-items:center;gap:8px;margin-top:14px;border:1px solid var(--line);border:1px solid color-mix(in srgb,currentColor 30%,transparent);background:none;color:inherit;border-radius:99px;padding:9px 16px;font:600 15px/1.2 inherit;font-family:inherit;cursor:pointer}
 .lp-a2hs svg{width:18px;height:18px}
+
+/* legal links, delete account */
+.legal-links{text-align:center;font-size:14px;color:var(--muted);margin:22px 0 4px}
+.legal-links a{color:inherit}
+.auth .fine a{color:inherit}
+.del-list{margin:0 0 12px;padding-left:22px;line-height:1.5}
+.del-list li{margin:0 0 4px}

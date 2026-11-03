@@ -3,6 +3,7 @@
 //   GET  /api/config   → public Supabase settings for the app
 //   POST /api/weather  → { destination, start, end, units } → forecast or typical weather
 //   POST /api/sort     → signed-in only; counts against the daily limit; Claude sorts items
+//   POST /api/delete-account → signed-in only; { confirm: "DELETE" } permanently deletes the account
 //
 // Environment variables (Netlify → Project configuration → Environment variables):
 //   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY   (Supabase → Project Settings → API)
@@ -14,7 +15,7 @@
 import { buildReminder, sendEmail } from "../lib/reminder-email.mjs";
 
 export const config = {
-  path: ["/api/config", "/api/weather", "/api/sort", "/api/test-reminder"],
+  path: ["/api/config", "/api/weather", "/api/sort", "/api/test-reminder", "/api/delete-account"],
   rateLimit: { windowLimit: 30, windowSize: 60, aggregateBy: ["ip", "domain"] },
 };
 
@@ -126,6 +127,21 @@ async function currentUser(req) {
   if (!r.ok) return null;
   const u = await r.json().catch(() => null);
   return u?.id ? u : null;
+}
+
+// Hands shared trips to the next member, then deletes the auth user (everything else cascades).
+async function deleteAccount(req) {
+  const user = await currentUser(req);
+  if (!user) return json({ error: "Sign in again, then try deleting your account." }, 401);
+  const body = await req.json().catch(() => ({}));
+  if (body.confirm !== "DELETE") return json({ error: "Type DELETE to confirm." }, 400);
+  const key = env("SUPABASE_SERVICE_ROLE_KEY"), base = env("SUPABASE_URL");
+  const headers = { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" };
+  const prep = await fetch(`${base}/rest/v1/rpc/prepare_account_deletion`, { method: "POST", headers, body: JSON.stringify({ p_user: user.id }) });
+  if (!prep.ok) { console.error("prepare_account_deletion", prep.status, await prep.text()); return json({ error: "Couldn't delete your account. Please try again or email hello@spruceandsound.com." }, 500); }
+  const del = await fetch(`${base}/auth/v1/admin/users/${encodeURIComponent(user.id)}`, { method: "DELETE", headers });
+  if (!del.ok) { console.error("delete user", del.status, await del.text()); return json({ error: "Couldn't delete your account. Please try again or email hello@spruceandsound.com." }, 500); }
+  return json({ ok: true, handedOff: Number(await prep.json().catch(() => 0)) || 0 });
 }
 
 async function useSort(userId) {
@@ -292,6 +308,7 @@ export default async (req) => {
       return json(w, w.error ? 422 : 200);
     }
     if (path === "/api/sort") return await sort(req);
+    if (path === "/api/delete-account" && req.method === "POST") return await deleteAccount(req);
     if (path === "/api/test-reminder") return await testReminder(req);
     return json({ error: "Not found" }, 404);
   } catch (err) {

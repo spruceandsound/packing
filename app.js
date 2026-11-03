@@ -112,6 +112,7 @@
       store.set("cfg", cfg);
     } catch (e) {
       cfg = store.get("cfg", null);
+      if (!cfg && navigator.onLine !== false && !/[?&]retry=1/.test(location.search)) { location.replace("/error"); return; }
       if (!cfg) { app.innerHTML = `<div class="auth"><div class="inner"><img src="/apple-touch-icon.png" alt=""><h1>Pack</h1><p>${esc(e.message || "Can't reach Pack right now.")}</p><a class="go" href="/" style="text-decoration:none">Try again</a></div></div>`; return; }
     }
     if (!window.supabase?.createClient) { await new Promise((r) => setTimeout(r, 400)); }
@@ -213,7 +214,8 @@
       headers: { "content-type": "application/json", ...(data.session ? { authorization: "Bearer " + data.session.access_token } : {}) },
       body: JSON.stringify(body),
     });
-    const d = await r.json().catch(() => ({ error: "No response from Pack" }));
+    const d = await r.json().catch(() => ({ error: r.status === 504 || r.status === 502 ? "Pack took too long to answer. Nothing was lost. Try again in a moment."
+      : r.status >= 500 ? "Pack is having trouble right now. Nothing was lost. Try again in a minute." : "No response from Pack. Check your connection and try again." }));
     if (!r.ok || d.error) { const e = new Error(d.error || "Request failed"); e.status = r.status; throw e; }
     return d;
   }
@@ -436,7 +438,7 @@
         <a class="lp-btn" href="#/signin">Start packing</a>
       </div></section>
 
-      <footer class="lp-foot"><div class="lp-wrap">Made by <a href="https://spruceandsound.com/studio">Spruce &amp; Sound</a> · © ${new Date().getFullYear()}</div></footer>
+      <footer class="lp-foot"><div class="lp-wrap"><a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy Policy</a> · © ${new Date().getFullYear()} Spruce &amp; Sound</div></footer>
     </div>`;
     $("#howLink").addEventListener("click", (e) => { e.preventDefault(); $("#how").scrollIntoView({ behavior: "smooth" }); });
   }
@@ -452,7 +454,7 @@
         <input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" value="${esc(email)}" required aria-label="Email">
         <button class="go" id="go" type="submit">Email me a sign-in code</button>
         <div class="err" id="err" role="alert"></div>
-        <div class="fine">New here? Same steps — your account is created automatically.</div>
+        <div class="fine">New here? Same steps — your account is created automatically.<br>By continuing you agree to Pack's <a href="/terms" target="_blank" rel="noopener">Terms of Use</a> and <a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a>.</div>
         ${invite ? "" : `<a class="link" href="#/" style="display:inline-block">← What is Pack?</a>`}
       </form></section>`;
       $("#f").addEventListener("submit", async (e) => {
@@ -1683,7 +1685,12 @@
       ${isStandalone() ? `<p class="hint" style="margin:0 4px">Pack is on your home screen ✓</p>`
         : `<div data-install-wrap="btn"${canInstall() ? "" : " hidden"}>${installBtn()}<p class="hint" style="margin:6px 4px 0">Opens full screen like an app, and your lists work offline.</p></div>
            ${canInstall() ? "" : `<p class="hint" style="margin:0 4px">On a phone, open pack.spruceandsound.com and use <strong>Add to Home Screen</strong> to use Pack like an app.</p>`}`}
+      <h3 class="sec">Your data</h3>
+      <button class="secondary" id="export" type="button">Download my data</button>
+      <p class="hint" style="margin:6px 4px 0">A file with your account, trips, lists, inventory, templates and expenses.</p>
       <button class="secondary" id="out" style="margin-top:28px">Sign out</button>
+      <button class="danger-btn" id="delAcct" type="button">Delete account</button>
+      <p class="legal-links"><a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy Policy</a> · <a href="mailto:hello@spruceandsound.com">Contact</a></p>
     </main>${tabs("me")}`;
       $("#nf").addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -1705,6 +1712,50 @@
         const { error } = await sb.from("profiles").update({ reminders: on }).eq("id", session.user.id);
         if (error) { e.target.checked = !on; return fail(error); }
         me.reminders = on; store.set("me", me); toast(on ? "Reminders on" : "Reminders off");
+      });
+      $("#export").addEventListener("click", async (e) => {
+        const b = e.currentTarget; busy(b, true, "Preparing…");
+        try {
+          const uid = session.user.id;
+          const [profile, trips, inventory, templates, expenses] = await Promise.all([
+            sb.from("profiles").select("*").eq("id", uid).maybeSingle().then(must),
+            sb.from("trips").select("*, trip_members(user_id, role, joined_at), items(*)").then(must),
+            sb.from("closet_items").select("*").eq("owner_id", uid).then(must),
+            sb.from("templates").select("*").then(must),
+            sb.from("expenses").select("*, expense_shares(*)").then(must),
+          ]);
+          for (const t of trips) t.expenses = expenses.filter((x) => x.trip_id === t.id);
+          for (const t of trips) t.items = (t.items || []).filter((i) => !i.personal_of || i.personal_of === uid);
+          const out = { exported_at: new Date().toISOString(), app: "Pack · pack.spruceandsound.com", account: { ...profile, email: profile?.email || session.user.email }, trips, inventory, templates };
+          const url = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }));
+          const a = Object.assign(document.createElement("a"), { href: url, download: `pack-data-${today()}.json` });
+          document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+          toast("Downloaded");
+        } catch (err) { fail(err); } finally { busy(b, false); }
+      });
+      $("#delAcct").addEventListener("click", () => {
+        openSheet(`<h2>Delete your account?</h2>
+          <p class="hint" style="margin:6px 0 10px">This can't be undone. Pack will permanently delete:</p>
+          <ul class="del-list"><li>Your profile, inventory and templates</li><li>Trips that only you are on</li><li>Your personal lists on shared trips</li><li>Expenses you paid for, and your shares of others' expenses</li></ul>
+          <p class="hint" style="margin:0 0 12px">Shared trips stay for everyone else. If you own one, it passes to the next person on it. Want a copy first? Use <strong>Download my data</strong>.</p>
+          <form id="delf"><label class="f" for="delc">Type DELETE to confirm</label>
+          <input class="t" id="delc" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+          <p class="hint" id="delerr" role="alert" style="color:var(--err)"></p>
+          <button class="danger-btn" type="submit" style="margin-top:4px">Delete my account</button>
+          <button class="secondary" type="button" id="delno">Keep my account</button></form>`);
+        $("#delno").addEventListener("click", closeSheet);
+        $("#delf").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          if ($("#delc").value.trim().toUpperCase() !== "DELETE") { $("#delerr").textContent = "Type DELETE to confirm."; return; }
+          const b = e.submitter || $("#delf .danger-btn"); busy(b, true, "Deleting…");
+          try {
+            await api("/api/delete-account", { confirm: "DELETE" });
+            for (const k of Object.keys(localStorage)) if (k.startsWith("pack2.") && k !== "pack2.cfg" && k !== "pack2.theme") localStorage.removeItem(k);
+            closeSheet(); history.replaceState(null, "", "#/");
+            await sb.auth.signOut().catch(() => {});
+            toast("Your account was deleted");
+          } catch (err) { busy(b, false); $("#delerr").textContent = err.message; }
+        });
       });
       $("#out").addEventListener("click", async () => {
         for (const k of Object.keys(localStorage)) if (k.startsWith("pack2.") && k !== "pack2.cfg" && k !== "pack2.lastEmail") localStorage.removeItem(k);
