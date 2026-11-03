@@ -1,6 +1,6 @@
 # Pack — pack.spruceandsound.com
 
-Smart, shareable packing lists. People sign in with an emailed code or Google, dump
+Smart, shareable packing lists. People sign in with an emailed code, dump
 everything they're bringing, and Claude sorts it into categories and bags, with
 weather-aware suggestions. Trips can be shared so a group packs together.
 
@@ -55,4 +55,4 @@ venmo.com; computers open venmo.com. Coming back to Pack offers to mark the shar
   redirect URL `https://pack.spruceandsound.com/**`
 - Authentication → Emails → Magic Link template must include `{{ .Token }}` (the app
   signs people in with the code, which works inside the home-screen app on iPhone)
-- Authentication → Sign In / Providers → Google: enabled with a Google OAuth client
+- Google sign-in is off (the button was removed). To add it back: enable Google under Authentication → Sign In / Providers with a Google OAuth client, then restore the button in `renderSignIn`

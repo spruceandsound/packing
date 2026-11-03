@@ -370,7 +370,7 @@
 
       <section class="lp-final"><div class="lp-wrap">
         <h2>Your next trip, sorted.</h2>
-        <p>Free to use. Sign in with your email or Google; no password to remember.</p>
+        <p>Free to use. Sign in with a code we email you; no password to remember.</p>
         <a class="lp-btn" href="#/signin">Start packing</a>
       </div></section>
 
@@ -389,8 +389,6 @@
         <p>${invite ? "Sign in to join the trip you were invited to." : "Dump everything you're bringing. Pack sorts it into a smart list."}</p>
         <input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" value="${esc(email)}" required aria-label="Email">
         <button class="go" id="go" type="submit">Email me a sign-in code</button>
-        <div class="or">or</div>
-        <button class="google" id="google" type="button">${ICON.google}Continue with Google</button>
         <div class="err" id="err" role="alert"></div>
         <div class="fine">New here? Same steps — your account is created automatically.</div>
         ${invite ? "" : `<a class="link" href="#/" style="display:inline-block">← What is Pack?</a>`}
@@ -405,10 +403,6 @@
         if (error && !/timeout|timed out|504|deadline|fetch/i.test(`${error.status} ${error.message}`)) { $("#err").textContent = error.message; return; }
         renderSignIn("code", em);
         if (error) $("#err").textContent = "Email is taking longer than usual. Check your inbox in a minute; if nothing arrives, go back and try again.";
-      });
-      $("#google").addEventListener("click", async () => {
-        const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: location.origin + "/" } });
-        if (error) $("#err").textContent = error.message;
       });
     } else {
       app.innerHTML = `${themeBtn("auth-theme")}<section class="auth"><form id="f">
