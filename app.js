@@ -63,6 +63,7 @@
     sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>',
     moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7z"/></svg>',
     back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+    phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M12 9v6M9 12h6"/></svg>',
     more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
     plus: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
@@ -287,6 +288,66 @@
   });
   darkMQ.addEventListener?.("change", () => applyTheme(themePref()));
 
+  // ───────────────────────── add to home screen ─────────────────────────
+  // Chrome/Edge/Android hand us an install prompt; iPhone Safari doesn't, so it gets step-by-step help.
+  let installEvt = null;
+  const UA = navigator.userAgent;
+  const isIOS = /iPhone|iPad|iPod/i.test(UA) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/i.test(UA);
+  const inAppBrowser = /Instagram|FBAN|FBAV|FB_IAB|musical_ly|TikTok|BytedanceWebview|Snapchat|Pinterest|LinkedInApp|Twitter/i.test(UA);
+  const isMacSafari = !isIOS && /Macintosh/.test(UA) && /Version\/\d+.*Safari/.test(UA) && !/Chrome|Chromium|Edg/.test(UA);
+  const isStandalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const canInstall = () => !isStandalone() && (!!installEvt || isIOS || isAndroid || inAppBrowser || isMacSafari);
+  const showA2hsCard = () => canInstall() && !(store.get("a2hsHide", 0) > Date.now());
+  function refreshInstall() {
+    for (const el of document.querySelectorAll("[data-install-wrap]")) el.hidden = !(el.dataset.installWrap === "card" ? showA2hsCard() : canInstall());
+  }
+  addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; refreshInstall(); });
+  addEventListener("appinstalled", () => { installEvt = null; store.set("a2hsHide", Date.now() + 3650 * 864e5); refreshInstall(); closeSheet(); toast("Pack is on your home screen"); });
+  const SHARE_IC = '<svg class="ios-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Share"><path d="M12 3v12M7.5 7.5 12 3l4.5 4.5"/><path d="M8 10H6.5A1.5 1.5 0 0 0 5 11.5v8A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 17.5 10H16"/></svg>';
+  const ADD_IC = '<svg class="ios-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-label="Add"><rect x="4" y="4" width="16" height="16" rx="4"/><path d="M12 8.5v7M8.5 12h7"/></svg>';
+  const DOTS_IC = '<svg class="ios-ic" viewBox="0 0 24 24" fill="currentColor" aria-label="More"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
+  const steps = (list) => `<ol class="a2hs-steps">${list.map((t) => `<li>${t}</li>`).join("")}</ol>`;
+  async function startInstall() {
+    if (installEvt) {
+      const e = installEvt; installEvt = null;
+      try { await e.prompt(); const r = await e.userChoice; if (r?.outcome === "accepted") { store.set("a2hsHide", Date.now() + 3650 * 864e5); toast("Adding Pack to your home screen"); } } catch {}
+      return refreshInstall();
+    }
+    const head = `<div class="a2hs-head"><img src="/apple-touch-icon.png" alt="" width="56" height="56"><div><h2>Add Pack to your home screen</h2><p class="muted">Opens full screen like an app, and your lists work offline.</p></div></div>`;
+    let body;
+    if (inAppBrowser) {
+      body = `<p>You're viewing Pack inside ${/Instagram/i.test(UA) ? "Instagram" : /musical_ly|TikTok|Bytedance/i.test(UA) ? "TikTok" : "another app"}, which can't add it to your home screen. Open it in ${isIOS ? "Safari" : "your browser"} first:</p>`
+        + steps([`Tap ${DOTS_IC} in the top corner.`, `Choose <strong>Open in ${isIOS ? "external browser" : "browser"}</strong>${isIOS ? " (or Open in Safari)" : ""}.`, "Then tap <strong>Add to Home Screen</strong> in Pack again."])
+        + `<button class="secondary" type="button" id="a2hsCopy">Copy link instead</button>`;
+    } else if (isIOS) {
+      const crios = /CriOS|FxiOS|EdgiOS/.test(UA);
+      body = steps([
+        crios ? `Tap ${SHARE_IC} <strong>Share</strong> in the address bar.` : `Tap ${SHARE_IC} <strong>Share</strong>. It's in the toolbar, or under ${DOTS_IC} next to the address bar on newer iPhones.`,
+        `Scroll down and tap ${ADD_IC} <strong>Add to Home Screen</strong>. If you don't see it, tap <strong>More</strong> or <strong>Edit Actions</strong> at the bottom.`,
+        "Tap <strong>Add</strong>. Pack appears on your home screen.",
+        typeof session !== "undefined" && session ? "Open Pack from your home screen and sign in once more with your email code." : "Open Pack from your home screen and sign in with your email.",
+      ]);
+    } else if (isAndroid) {
+      body = steps(["Tap <strong>⋮</strong> in your browser's top corner.", "Tap <strong>Add to Home screen</strong> or <strong>Install app</strong>.", "Tap <strong>Add</strong> or <strong>Install</strong>."]);
+    } else if (isMacSafari) {
+      body = steps(["In the menu bar, choose <strong>File → Add to Dock</strong>.", "Click <strong>Add</strong>. Pack opens in its own window from your Dock."]);
+    } else {
+      body = steps(["Open your browser's menu.", "Choose <strong>Install Pack</strong> or <strong>Add to Home Screen</strong>."]);
+    }
+    openSheet(head + body + `<button class="primary" type="button" id="a2hsDone">Got it</button>`);
+    $("#a2hsDone")?.addEventListener("click", closeSheet);
+    $("#a2hsCopy")?.addEventListener("click", async () => { try { await navigator.clipboard.writeText(location.origin + "/"); toast("Link copied. Paste it into Safari."); } catch { toast(location.origin); } });
+  }
+  const installBtn = (cls = "secondary") => `<button type="button" class="${cls} a2hs-btn" data-install>${ICON.phone}Add to Home Screen</button>`;
+  const installCard = () => `<section class="card a2hs-card" data-install-wrap="card"${showA2hsCard() ? "" : " hidden"}>
+      <img src="/apple-touch-icon.png" alt="" width="44" height="44"><div class="grow"><strong>Get Pack on your home screen</strong><span class="muted">Opens like an app and works offline.</span></div>
+      <button type="button" class="pill a2hs-add" data-install>Add</button><button type="button" class="a2hs-x" data-install-hide aria-label="Not now">×</button></section>`;
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("[data-install]")) return startInstall();
+    if (e.target.closest("[data-install-hide]")) { store.set("a2hsHide", Date.now() + 21 * 864e5); refreshInstall(); }
+  });
+
   const header = ({ title, sub = "", back = "", more = false, progress = null }) => `
     <header class="bar"><div class="bar-row">
       ${back ? `<a class="icon-btn" href="${back}" aria-label="Back">${ICON.back}</a>` : ""}
@@ -312,6 +373,7 @@
           <h1>Dump it all in.<br><span>Pack sorts it out.</span></h1>
           <p class="lp-lede">Type everything you're bringing, in any order and any format. Pack sorts it into categories and bags, checks the forecast for your dates, and keeps your gear ready for the next trip.</p>
           <div class="lp-ctas"><a class="lp-btn" href="#/signin">Start packing. It's free</a><a class="lp-link" href="#/" id="howLink">See how it works ↓</a></div>
+          <div data-install-wrap="btn"${canInstall() ? "" : " hidden"}><button type="button" class="lp-a2hs" data-install>${ICON.phone}Add Pack to your home screen</button></div>
           <p class="lp-fine">Works on iPhone, iPad and Android. Add it to your home screen like an app.</p>
         </div>
         <div class="lp-phone lp-tilt"><img src="/img/trip.webp" alt="A Big Sur weekend trip in Pack: the 4-day forecast, filters for clothes, gear and essentials, and smart suggestions like bug spray and a lens cloth" width="780" height="1333" fetchpriority="high"></div>
@@ -464,7 +526,7 @@
       const upcoming = trips.filter((t) => !t.end_date || t.end_date >= t0);
       const past = trips.filter((t) => t.end_date && t.end_date < t0);
       app.innerHTML = header({ title: "Trips", sub: me?.display_name ? `Hi, ${esc(me.display_name)}` : "" }) +
-        `<main class="tabbed">${!trips.length ? `<div class="empty"><strong>No trips yet</strong>Tap “New trip”, dump everything you're bringing, and Pack sorts it — with weather-smart suggestions.</div>` : ""}
+        `<main class="tabbed">${installCard()}${!trips.length ? `<div class="empty"><strong>No trips yet</strong>Tap “New trip”, dump everything you're bringing, and Pack sorts it — with weather-smart suggestions.</div>` : ""}
         ${upcoming.map(tripCard).join("")}
         ${past.length ? `<h3 class="sec">Past trips</h3>${past.map(tripCard).join("")}` : ""}</main>
         <a class="fab" href="#/new">${ICON.plus}New trip</a>${tabs("trips")}`;
@@ -1617,8 +1679,10 @@
       <label class="check-row" style="margin-top:0"><input type="checkbox" id="remind"${me?.reminders === false ? "" : " checked"}><span class="grow">Email me the day before a trip<br><small class="muted">What's left to pack and what to grab last, sent around 9am your time.</small></span></label>
       <h3 class="sec">Smart sorting</h3>
       <p class="hint" style="margin:0 4px">Each person gets ${cfg.dailyLimit || 50} smart sorts a day, reset at midnight. Checking things off, editing and sharing never count.</p>
-      <h3 class="sec">On your iPhone or iPad</h3>
-      <p class="hint" style="margin:0 4px">In Safari, tap Share → <strong>Add to Home Screen</strong> to use Pack like an app.</p>
+      <h3 class="sec">Home screen</h3>
+      ${isStandalone() ? `<p class="hint" style="margin:0 4px">Pack is on your home screen ✓</p>`
+        : `<div data-install-wrap="btn"${canInstall() ? "" : " hidden"}>${installBtn()}<p class="hint" style="margin:6px 4px 0">Opens full screen like an app, and your lists work offline.</p></div>
+           ${canInstall() ? "" : `<p class="hint" style="margin:0 4px">On a phone, open pack.spruceandsound.com and use <strong>Add to Home Screen</strong> to use Pack like an app.</p>`}`}
       <button class="secondary" id="out" style="margin-top:28px">Sign out</button>
     </main>${tabs("me")}`;
       $("#nf").addEventListener("submit", async (e) => {
