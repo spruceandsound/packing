@@ -888,7 +888,7 @@
     const counts = (g) => { const all = shown.filter((i) => groupOf(i) === g); return `${all.filter((i) => i.packed).length}/${all.length}`; };
     const kindCount = (k) => inPurpose.filter((i) => k === "all" || kindOf(i) === k).length;
 
-    const wxHtml = weatherCard(trip);
+
 
     const sugg = Array.isArray(trip.suggestions) ? trip.suggestions : [];
     const ownerId = T.members.find((m) => m.role === "owner")?.user_id;
@@ -897,7 +897,7 @@
       title: trip.name, back: "#/", more: true, progress: n ? (p / n) * 100 : 0,
       sub: [n ? `${p} of ${n} packed${shared ? (onGroup ? " (group)" : " (yours)") : ""}` : (shared && !onGroup ? "Your list is empty" : "No items yet"), dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · "),
     }) + `<main${view.select ? ' style="padding-bottom:calc(var(--safe-b) + 240px)"' : ""}>
-      ${wxHtml}
+
       <div class="members">
         <span class="avs">${T.members.map((m) => avatar(profileOf(m.user_id))).join("")}</span>
         <span class="grow muted" style="font-size:14px">${shared ? `Packing with ${T.members.length - 1} other${T.members.length > 2 ? "s" : ""}` : "Just you"}</span>
