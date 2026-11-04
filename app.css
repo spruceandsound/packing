@@ -500,3 +500,7 @@ button.share.paid{border-color:var(--line);border-color:color-mix(in srgb,var(--
 .pill.laundry-f.on small{color:inherit;opacity:.8}
 .laundry-hint{display:flex;gap:8px;align-items:flex-start;margin:0 4px 12px}
 .laundry-hint svg{flex:none;width:17px;height:17px;color:var(--sky);margin-top:2px}
+
+/* always bring (item sheet) */
+.always-row{margin-top:8px;margin-bottom:4px;border-color:var(--amber);border-color:color-mix(in srgb,var(--amber) 55%,var(--line))}
+.always-row input{accent-color:var(--amber)}

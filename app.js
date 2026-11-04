@@ -706,6 +706,20 @@
   const kindOf = (i) => i.kind || "gear";
   const purposeOf = (i) => i.purpose || "personal";
   const inInventory = (i) => (T.inventory || []).includes(key(i.name));
+  const isAlways = (i) => (T.always || []).includes(key(i.name));
+  // "Always bring": an item in your inventory marked Always is added to every new trip.
+  async function setAlways(it, on) {
+    const k = key(it.name);
+    const rows = must(await sb.from("closet_items").select("id,name").eq("owner_id", session.user.id)).filter((r) => key(r.name) === k);
+    if (rows.length) {
+      const { error } = await sb.from("closet_items").update({ always: on }).in("id", rows.map((r) => r.id)); if (error) throw error;
+    } else if (on) {
+      await write({ type: "insert", table: "closet_items", rows: [{ id: newId(), name: it.name, qty: it.qty, note: it.note, category: it.category, kind: kindOf(it), purpose: purposeOf(it), always: true, owner_id: session.user.id }] });
+      T.inventory = [...new Set([...(T.inventory || []), k])];
+    }
+    T.always = on ? [...new Set([...(T.always || []), k])] : (T.always || []).filter((x) => x !== k);
+    invCache = null; cacheTrip();
+  }
   async function addToInventory(list) {
     const fresh = list.filter((i) => !inInventory(i));
     if (!fresh.length) return toast(list.length > 1 ? "Those are all in your inventory already" : "Already in your inventory");
@@ -724,12 +738,12 @@
       sb.from("trips").select("*").eq("id", id).maybeSingle().then(must),
       sb.from("items").select("*").eq("trip_id", id).order("position").order("created_at").then(must),
       sb.from("trip_members").select("user_id,role").eq("trip_id", id).then(must),
-      sb.from("closet_items").select("name").eq("owner_id", session.user.id).then(must),
+      sb.from("closet_items").select("name,always").eq("owner_id", session.user.id).then(must),
     ]);
     if (!trip) return null;
     const ids = members.map((m) => m.user_id);
     const profiles = ids.length ? must(await sb.from("profiles").select("id,email,display_name,venmo").in("id", ids)) : [];
-    return applyPending({ trip, items, members, profiles, inventory: inv.map((i) => key(i.name)) });
+    return applyPending({ trip, items, members, profiles, inventory: inv.map((i) => key(i.name)), always: inv.filter((i) => i.always).map((i) => key(i.name)) });
   }
 
   async function renderTrip(id) {
@@ -739,8 +753,12 @@
     if (!fresh) { store.set("trip." + id, null); toast("That trip isn't available."); return go("#/"); }
     T = fresh; cacheTrip(); drawTrip();
 
-    const maxAge = (T.trip.weather?.hours?.length ? 2 : 6) * 3600e3;
-    const stale = !T.trip.weather || !("lat" in T.trip.weather) || (Date.now() - new Date(T.trip.weather.fetched || 0) > maxAge && (!T.trip.end_date || T.trip.end_date >= today()));
+    const wx0 = T.trip.weather, t0 = today();
+    const notOver = !T.trip.end_date || T.trip.end_date >= t0;
+    const underway = notOver && (!T.trip.start_date || T.trip.start_date <= t0);
+    const maxAge = (underway ? 1 : wx0?.hours?.length ? 2 : 6) * 3600e3;
+    const stale = !wx0 || !("lat" in wx0) || (notOver && (Date.now() - new Date(wx0.fetched || 0) > maxAge
+      || (wx0.kind !== "typical" && !("offset" in wx0)) || (underway && wx0.hours?.length && wxNow(wx0).hours.length < 46)));
     if (T.trip.destination && stale) getWeather(T.trip).then(() => { if (T?.trip.id === id) drawTrip(); }).catch(() => {});
 
     // Live updates from other members
@@ -783,14 +801,24 @@
   const hourLabel = (t) => { const h = Number(t.slice(11, 13)); return h === 0 ? "12a" : h < 12 ? h + "a" : h === 12 ? "12p" : (h - 12) + "p"; };
   const clock = (hm) => { if (!hm) return ""; const [h, m] = hm.split(":").map(Number); return `${h % 12 || 12}:${String(m).padStart(2, "0")}${h < 12 ? "am" : "pm"}`; };
   let wxOpen = { hours: true };
+  // Drop hours and days that have already passed at the destination (forecasts are saved, and time moves on).
+  function wxNow(wx) {
+    const nowH = typeof wx.offset === "number" ? new Date(Date.now() + wx.offset * 1000).toISOString().slice(0, 13)
+      : new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 13);
+    const hours = (Array.isArray(wx.hours) ? wx.hours : []).filter((h) => String(h.t).slice(0, 13) >= nowH).slice(0, 48);
+    const fore = wx.kind !== "typical" && Array.isArray(wx.days);
+    const left = fore ? wx.days.filter((d) => String(d.date).slice(0, 10) >= nowH.slice(0, 10)) : wx.days || [];
+    return { nowH, hours, days: left.length ? left : wx.days || [] };
+  }
   function weatherCard(trip) {
-    const wx = trip.weather;
-    if (!(wx && Array.isArray(wx.days) && wx.days.length)) {
+    const wx0 = trip.weather;
+    if (!(wx0 && Array.isArray(wx0.days) && wx0.days.length)) {
       return trip.destination ? "" : `<a class="card wx" style="display:block;text-decoration:none;color:inherit;padding:14px 16px" href="#/trip/${trip.id}/edit"><span class="muted">Add a destination and dates to see the weather and get weather-smart suggestions →</span></a>`;
     }
+    const now = wxNow(wx0), wx = { ...wx0, days: now.days };
     const windUnit = wx.units === "c" ? "km/h" : "mph";
-    const hours = Array.isArray(wx.hours) ? wx.hours : [];
-    const startsToday = hours.length && hours[0].t.slice(0, 10) === new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+    const hours = now.hours;
+    const startsToday = hours.length && hours[0].t.slice(0, 13) === now.nowH;
     const d0 = wx.days[0];
     return `<section class="card wx">
       <div class="wx-head"><strong>${esc(wx.place)}</strong><span>${wx.kind === "typical" ? "Typical for your dates" : wx.kind === "next7" ? "Next 7 days" : "Forecast"}</span></div>
@@ -798,7 +826,7 @@
         <div class="i">${WX(Number(d.code))}</div><div class="h">${esc(Number(d.hi))}°</div><div class="l">${esc(Number(d.lo))}°</div>
         <div class="p">${wx.kind === "typical" ? (Number(d.rain) > (wx.units === "c" ? 1 : 0.04) ? "rain" : "") : Number(d.rain) >= 20 ? esc(Number(d.rain)) + "%" : ""}</div></div>`).join("")}</div>
       <div class="wx-sum">${esc(wx.summary)}</div>
-      ${hours.length ? `<button class="wx-toggle" data-wx="hours" aria-expanded="${wxOpen.hours}">${wxOpen.hours ? "▾" : "▸"} ${startsToday ? "Next 48 hours" : "Hour by hour, first two days"}</button>
+      ${hours.length ? `<button class="wx-toggle" data-wx="hours" aria-expanded="${wxOpen.hours}">${wxOpen.hours ? "▾" : "▸"} ${startsToday ? `Next ${hours.length >= 48 ? 48 : hours.length} hours` : "Hour by hour, first two days"}</button>
         ${d0?.sunrise && wxOpen.hours ? `<div class="wx-sun">Sunrise ${esc(clock(d0.sunrise))} · Sunset ${esc(clock(d0.sunset))}${d0.wind ? ` · Gusts to ${esc(Number(d0.wind))} ${windUnit}` : ""}</div>` : ""}
         ${wxOpen.hours ? `<div class="wx-hours" role="list">${hours.map((h, i) => `${i && h.t.slice(11, 13) === "00" ? `<div class="wx-sep" role="presentation"><span>${esc(fmtDate(h.t.slice(0, 10), { weekday: "short" }))}</span></div>` : ""}<div class="wx-hour${h.day ? "" : " night"}" role="listitem">
             <div class="t">${i === 0 && startsToday ? "Now" : hourLabel(h.t)}</div>
@@ -1192,6 +1220,7 @@
     if (!it) return;
     const cats = [...new Set(T.items.map((i) => i.category))];
     openSheet(`<h2>Edit item</h2><form id="ef">
+      <label class="check-row always-row"><input type="checkbox" id="ealw"${isAlways(it) ? " checked" : ""}><span class="grow"><strong>Always bring</strong><br><small class="muted" id="ealwnote">${isAlways(it) ? "Added to every new trip you make." : "Add it to every new trip you make."}</small></span></label>
       <label class="f" for="en">Item</label><input class="t" id="en" value="${esc(it.name)}" required maxlength="200">
       <div class="row2"><div><label class="f" for="eq">Qty</label><input class="t" id="eq" value="${esc(it.qty)}" maxlength="40"></div>
       <div><label class="f" for="ec">Category</label><input class="t" id="ec" value="${esc(it.category)}" list="cats" maxlength="40"><datalist id="cats">${cats.map((c) => `<option value="${esc(c)}">`).join("")}</datalist></div></div>
@@ -1204,8 +1233,20 @@
       <label class="f" for="eb">Bag</label><select class="t" id="eb"><option value="">No bag</option>${T.trip.bags.map((b) => `<option${key(b) === key(it.bag) ? " selected" : ""}>${esc(b)}</option>`).join("")}<option value="__new">+ New bag…</option></select>
       <label class="f" for="eo">Note</label><input class="t" id="eo" value="${esc(it.note)}" maxlength="200">
       <button class="primary" type="submit">Save</button>
-      ${inInventory(it) ? `<p class="hint" style="text-align:center;margin-top:12px">✓ In your inventory</p>` : `<button class="secondary" type="button" id="toCloset">Add to inventory</button>`}
+      ${inInventory(it) ? `<p class="hint inv-state" style="text-align:center;margin-top:12px">✓ In your inventory</p>` : `<button class="secondary" type="button" id="toCloset">Add to inventory</button>`}
       <button class="danger-btn" type="button" id="del">Remove from list</button></form>`);
+    $("#ealw").addEventListener("change", async (e) => {
+      const on = e.target.checked, cb = e.target; cb.disabled = true;
+      if (!navigator.onLine) { cb.checked = !on; cb.disabled = false; return toast("Connect to the internet to change this."); }
+      try {
+        const wasInInv = inInventory(it);
+        await setAlways(it, on);
+        $("#ealwnote") && ($("#ealwnote").textContent = on ? "Added to every new trip you make." : "Add it to every new trip you make.");
+        if (on && !wasInInv) { const h = $("#ef .hint.inv-state"); const b = $("#toCloset"); if (b) b.outerHTML = `<p class="hint inv-state" style="text-align:center;margin-top:12px">✓ In your inventory</p>`; }
+        toast(on ? `${it.name} will come on every new trip${wasInInv ? "" : " (added to your inventory)"}` : `${it.name} won't be added to new trips`);
+      } catch (err) { cb.checked = !on; fail(err); }
+      finally { cb.disabled = false; }
+    });
     for (const id of ["#ek", "#ep", "#elist"]) $(id)?.addEventListener("click", (e) => {
       const b = e.target.closest("[data-k]"); if (!b) return;
       $$("button", $(id)).forEach((x) => x.classList.toggle("on", x === b));

@@ -68,14 +68,22 @@ async function weather({ destination, start, end, units }) {
   if (start && end < start) end = start;
   if (start && end && addDays(start, 21) < end) end = addDays(start, 21);
 
-  let kind, url;
-  if (!start || (start <= lastForecastDay && end >= today)) {
-    const s = !start || start < today ? today : start;
+  // "today" here is the UTC date, which can be a day ahead of (or behind) the destination's own date,
+  // so ask for a day either side and trim to the destination's local today once we know its offset.
+  const yesterday = addDays(today, -1);
+  let kind, url, winStart, winEnd;
+  if (!start || (start <= lastForecastDay && end >= yesterday)) {
+    const s = !start || start < yesterday ? yesterday : start;
     const e = !start ? addDays(today, 6) : end > lastForecastDay ? lastForecastDay : end;
+    winStart = start || yesterday; winEnd = !start ? addDays(today, 7) : e;
+    // Hourly detail runs 48 hours from now (mid-trip) or from the start of the trip, even past its last day.
+    const hourFrom = s > today ? s : today;
+    const want = e > addDays(hourFrom, 2) ? e : addDays(hourFrom, 2);
+    const eReq = want > lastForecastDay ? lastForecastDay : want;
     kind = start ? "forecast" : "next7";
     // Hourly detail for the first two days (temperature, feels like, rain chance, wind).
     const wind = units === "c" ? "&wind_speed_unit=kmh" : "&wind_speed_unit=mph";
-    url = `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,wind_speed_10m_max&hourly=temperature_2m,apparent_temperature,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m,is_day&timezone=auto&start_date=${s}&end_date=${e}${f}${wind}`;
+    url = `https://api.open-meteo.com/v1/forecast?latitude=${geo.lat}&longitude=${geo.lon}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,wind_speed_10m_max&hourly=temperature_2m,apparent_temperature,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m,is_day&timezone=auto&start_date=${s}&end_date=${eReq}${f}${wind}`;
   } else {
     // Too far out (or in the past): use the same dates last year as a guide.
     const back = (s) => `${Number(s.slice(0, 4)) - (s > today ? 1 : 0) - (s > today && addDays(s, -365) > today ? 1 : 0)}${s.slice(4)}`;
@@ -86,26 +94,31 @@ async function weather({ destination, start, end, units }) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.daily) return { error: "Weather isn't available right now." };
   const t = d.daily;
-  const days = t.time.map((date, i) => ({
+  const offset = d.utc_offset_seconds || 0;
+  const nowLocal = new Date(Date.now() + offset * 1000).toISOString().slice(0, 13); // "YYYY-MM-DDTHH" at the destination
+  const localToday = nowLocal.slice(0, 10);
+  let days = t.time.map((date, i) => ({
     date: kind === "typical" ? addDays(start, i) : date,
     hi: Math.round(t.temperature_2m_max[i]),
     lo: Math.round(t.temperature_2m_min[i]),
     code: t.weather_code?.[i] ?? null,
     rain: kind === "typical" ? (t.precipitation_sum[i] ?? 0) : (t.precipitation_probability_max[i] ?? 0),
+    ...(kind === "typical" ? {} : { sunrise: t.sunrise?.[i]?.slice(11, 16) || "", sunset: t.sunset?.[i]?.slice(11, 16) || "", wind: Math.round(t.wind_speed_10m_max?.[i] ?? 0) }),
   })).filter((x) => Number.isFinite(x.hi));
+  // Forecasts show the trip's days from the destination's today on (or the next 7 days when there are no dates).
+  if (kind !== "typical") days = days.filter((x) => x.date >= localToday && x.date >= winStart && x.date <= winEnd).slice(0, kind === "next7" ? 7 : 22);
   if (!days.length) return { error: "Weather isn't available for those dates." };
-  // First 48 hours of the window, starting from this hour if the window starts today.
+  // 48 hours: from this hour if the trip has started (or has no dates), otherwise from the start of the first day.
   let hours = [];
   if (d.hourly?.time) {
     const h = d.hourly;
-    const nowLocal = new Date(Date.now() + (d.utc_offset_seconds || 0) * 1000).toISOString().slice(0, 13);
-    const from = Math.max(0, h.time.findIndex((x) => x.slice(0, 13) >= nowLocal));
+    const firstHour = start && start + "T00" > nowLocal ? start + "T00" : nowLocal;
+    const from = Math.max(0, h.time.findIndex((x) => x.slice(0, 13) >= firstHour));
     hours = h.time.slice(from, from + 48).map((time, k) => {
       const i = from + k;
       return { t: time, temp: Math.round(h.temperature_2m[i]), feels: Math.round(h.apparent_temperature[i]), rain: h.precipitation_probability[i] ?? 0,
         code: h.weather_code[i] ?? null, wind: Math.round(h.wind_speed_10m[i] ?? 0), dir: Math.round(h.wind_direction_10m[i] ?? 0), day: h.is_day[i] === 1 };
     }).filter((x) => Number.isFinite(x.temp));
-    days.forEach((x, i) => { x.sunrise = d.daily.sunrise?.[i]?.slice(11, 16) || ""; x.sunset = d.daily.sunset?.[i]?.slice(11, 16) || ""; x.wind = Math.round(d.daily.wind_speed_10m_max?.[i] ?? 0); });
   }
   const u = units === "c" ? "°C" : "°F";
   const his = days.map((x) => x.hi), los = days.map((x) => x.lo);
@@ -113,7 +126,7 @@ async function weather({ destination, start, end, units }) {
   const conds = [...new Set(days.map((x) => WMO(x.code)).filter(Boolean))].slice(0, 3).join(", ");
   const summary = `${kind === "typical" ? "Typical for these dates" : "Forecast"}: highs ${Math.min(...his)}–${Math.max(...his)}${u}, lows ${Math.min(...los)}–${Math.max(...los)}${u}; ${wet ? `${wet} of ${days.length} days ${kind === "typical" ? "had" : "likely"} rain` : "mostly dry"}${conds ? ` (${conds})` : ""}.`;
   return { place: geo.place, lat: Math.round(geo.lat * 1000) / 1000, lon: Math.round(geo.lon * 1000) / 1000, kind, units: units === "c" ? "c" : "f",
-    days, hours, summary, fetched: new Date().toISOString() };
+    days, hours, summary, offset, fetched: new Date().toISOString() };
 }
 
 // ───────────────────────── auth & limits ─────────────────────────
