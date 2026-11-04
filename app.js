@@ -64,6 +64,7 @@
     moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7z"/></svg>',
     back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
     laundry: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 10h17l-1.7 9.1a2 2 0 0 1-2 1.6H7.2a2 2 0 0 1-2-1.6z"/><path d="M8 10l3-5.5M16 10l-3-5.5"/><path d="M9 14v3M12 14v3M15 14v3"/></svg>',
+    plane: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 15.5v-2l-8-5V3.8a1.5 1.5 0 0 0-3 0v4.7l-8 5v2l8-2.5V18l-2.2 1.6V21l3.7-1 3.7 1v-1.4L13 18v-5z" transform="rotate(90 12 12)"/></svg>',
     phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5"/><path d="M12 9v6M9 12h6"/></svg>',
     more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
     plus: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
@@ -203,7 +204,7 @@
       }
       if (done) toast(`Synced ${done} change${done === 1 ? "" : "s"} you made offline`);
       if (dropped) setTimeout(() => toast(`${dropped} offline change${dropped === 1 ? "" : "s"} couldn't be saved (the item may have been removed)`, 4500), done ? 3000 : 0);
-      if (done && T && location.hash === `#/trip/${T.trip.id}`) { const f = await fetchTrip(T.trip.id).catch(() => null); if (f) { T = f; cacheTrip(); drawTrip(); } }
+      if (done && T && location.hash === `#/trip/${T.trip.id}/pack`) { const f = await fetchTrip(T.trip.id).catch(() => null); if (f) { T = f; cacheTrip(); drawTrip(); } }
     })().finally(() => { flushing = null; netbar(); });
     return flushing;
   }
@@ -249,7 +250,8 @@
     try {
       if (view === "trip" && id && sub === "edit") return await renderTripForm(id);
       if (view === "trip" && id && sub === "expenses") return await renderExpenses(id);
-      if (view === "trip" && id) return await renderTrip(id);
+      if (view === "trip" && id && sub === "pack") return await renderTrip(id);
+      if (view === "trip" && id) return await renderOverview(id);
       if (view === "new") return await renderTripForm(null, id);
       if (view === "inventory" || view === "closet") return await renderCloset();
       if (view === "templates") return await renderTemplates();
@@ -641,7 +643,7 @@
         let weather = null;
         if (row.destination) { busy(btn, true, "Checking the weather…"); weather = await getWeather(created).catch(() => null); }
         if (text) { busy(btn, true, "Sorting your list…"); await sortInto(created, text, [], weather, workNames); }
-        go(`#/trip/${created.id}`);
+        go(`#/trip/${created.id}${text ? "/pack" : ""}`);
       } catch (err) { busy(btn, false); fail(err); }
     });
   }
@@ -768,7 +770,7 @@
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "trips", filter: `id=eq.${id}` }, () => { clearTimeout(h); h = setTimeout(refresh, 250); })
       .subscribe();
     async function refresh() {
-      if (location.hash !== `#/trip/${id}`) return;
+      if (location.hash !== `#/trip/${id}/pack`) return;
       const f = await fetchTrip(id).catch(() => null);
       if (f) { T = f; cacheTrip(); drawTrip(); }
     }
@@ -842,10 +844,10 @@
 
   function tripTabs(on) {
     const id = T.trip.id;
-    const spent = T.expensesTotal ?? ((store.get("exp." + id, null)?.expenses || []).reduce((x, e) => x + e.amount_cents, 0));
     return `<nav class="triptabs" aria-label="Trip sections">
-      <a href="#/trip/${id}" class="${on === "packing" ? "on" : ""}">Packing</a>
-      <a href="#/trip/${id}/expenses" class="${on === "expenses" ? "on" : ""}">Expenses${spent ? ` <small>${esc(money(spent, T.trip.currency))}</small>` : ""}</a></nav>`;
+      <a href="#/trip/${id}" class="${on === "overview" ? "on" : ""}">Overview</a>
+      <a href="#/trip/${id}/pack" class="${on === "packing" ? "on" : ""}">Packing</a>
+      <a href="#/trip/${id}/expenses" class="${on === "expenses" ? "on" : ""}">Expenses</a></nav>`;
   }
 
   function drawTrip() {
@@ -1297,7 +1299,7 @@
       if (!confirm("Remove this person from the trip?")) return;
       const { error } = await sb.from("trip_members").delete().eq("trip_id", T.trip.id).eq("user_id", b.dataset.rm);
       if (error) return fail(error);
-      T.members = T.members.filter((m) => m.user_id !== b.dataset.rm); closeSheet(); drawTrip(); toast("Removed");
+      T.members = T.members.filter((m) => m.user_id !== b.dataset.rm); closeSheet(); redrawTrip(); toast("Removed");
     }));
   }
 
@@ -1318,7 +1320,7 @@
         if (a === "edit") go(`#/trip/${id}/edit`);
         if (a === "weather") {
           if (!T.trip.destination) return go(`#/trip/${id}/edit`);
-          toast("Checking the weather…"); await getWeather(T.trip); drawTrip();
+          toast("Checking the weather…"); await getWeather(T.trip); redrawTrip();
         }
         if (a === "template") {
           const name = prompt("Template name", T.trip.name.replace(/\b(19|20)\d\d\b/g, "").trim() || T.trip.name);
@@ -1334,7 +1336,7 @@
           try { await navigator.clipboard.writeText(txt); toast("Copied"); } catch { toast("Couldn't copy on this device"); }
         }
         if (a === "reset" && confirm("Uncheck every item?")) {
-          T.items.forEach((i) => { i.packed = false; i.packed_by = null; }); cacheTrip(); drawTrip();
+          T.items.forEach((i) => { i.packed = false; i.packed_by = null; }); cacheTrip(); redrawTrip();
           await write({ type: "update", table: "items", eq: { trip_id: id }, patch: { packed: false, packed_by: null } });
         }
         if (a === "delete" && confirm(`Delete “${T.trip.name}” for everyone on it?`)) {
@@ -1344,6 +1346,227 @@
           must(await sb.from("trip_members").delete().eq("trip_id", id).eq("user_id", session.user.id)); store.set("trip." + id, null); go("#/");
         }
       } catch (err) { fail(err); }
+    });
+  }
+
+  // ───────────────────────── trip overview (dashboard) ─────────────────────────
+  let FL = null; // { tripId, flights: [...] }
+  async function fetchFlights(id) {
+    const { data, error } = await sb.from("trip_flights").select("*").eq("trip_id", id).order("flight_date").order("dep_time");
+    if (error) { if (/trip_flights|schema cache|does not exist/i.test(error.message)) return { tripId: id, flights: [], unavailable: true }; throw new Error(error.message); }
+    return { tripId: id, flights: data || [] };
+  }
+  const redrawTrip = () => {
+    const h = location.hash;
+    if (h.endsWith("/pack")) drawTrip(); else if (h.endsWith("/expenses")) { if (EX) drawExpenses(); } else if (T && h === `#/trip/${T.trip.id}`) drawOverview();
+  };
+  // Where the trip stands today: countdown, day x of y, or over.
+  function tripStatus(trip) {
+    const t0 = today(), s = trip.start_date, e = trip.end_date || trip.start_date;
+    const days = (a, b) => Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 864e5);
+    if (!s) return { big: "No dates yet", small: "Add dates for a countdown and the forecast", tone: "" };
+    if (t0 < s) { const n = days(t0, s); return { big: n === 1 ? "Tomorrow" : `${n} days`, small: n === 1 ? "You leave tomorrow" : "until you leave", tone: n <= 2 ? "soon" : "" }; }
+    if (t0 <= e) { const n = days(s, t0) + 1, of = days(s, e) + 1; return { big: of === 1 ? "Today" : `Day ${n} of ${of}`, small: t0 === e ? (of === 1 ? "Have a great trip" : "Last day. Safe travels home") : "You're on the trip", tone: "now" }; }
+    const n = days(e, t0); return { big: "Trip's over", small: n === 1 ? "Ended yesterday" : `Ended ${n} days ago`, tone: "past" };
+  }
+  const FLIGHT_STATE = (st) => {
+    if (!st) return null;
+    const s = String(st.state || "").toLowerCase(), late = Math.max(st.dep?.late || 0, 0), arrLate = st.arr?.late || 0;
+    if (/cancel/.test(s)) return ["Canceled", "bad"];
+    if (/divert/.test(s)) return ["Diverted", "bad"];
+    if (/landed|arrived/.test(s)) return [arrLate > 10 ? `Landed ${arrLate} min late` : "Landed", "ok"];
+    if (/enroute|departed|approaching/.test(s)) return ["In the air", "air"];
+    if (/boarding/.test(s)) return ["Boarding", "air"];
+    if (/gateclosed/.test(s)) return ["Gate closed", "air"];
+    if (/delay/.test(s) || late > 10) return [late ? `Delayed ${late >= 60 ? Math.floor(late / 60) + "h " + (late % 60) + "m" : late + " min"}` : "Delayed", "warn"];
+    if (/checkin/.test(s)) return ["Check-in open", "ok"];
+    if (/expected|scheduled/.test(s)) return ["On time", "ok"];
+    return null;
+  };
+  const DIR = { out: "Going", back: "Coming home", other: "Other flights" };
+  function flightRow(f) {
+    const st = f.status, lab = FLIGHT_STATE(st);
+    const dep = (f.dep_airport || st?.dep?.iata || "").toUpperCase(), arr = (f.arr_airport || st?.arr?.iata || "").toUpperCase();
+    const hm = (x) => (x ? clock(x) : "");
+    const depT = st?.dep?.est && st.dep.est !== st.dep.sched ? st.dep.est.slice(11, 16) : st?.dep?.sched?.slice(11, 16) || f.dep_time;
+    const arrT = st?.arr?.est && st.arr.est !== st.arr.sched ? st.arr.est.slice(11, 16) : st?.arr?.sched?.slice(11, 16) || f.arr_time;
+    const moved = st?.dep?.est && st?.dep?.sched && st.dep.est !== st.dep.sched;
+    const bits = [st?.dep?.terminal && `Terminal ${st.dep.terminal}`, st?.dep?.gate && `Gate ${st.dep.gate}`, st?.arr?.belt && `Bags: belt ${st.arr.belt}`].filter(Boolean);
+    const who = f.user_id ? profileOf(f.user_id) : null;
+    const num = f.flight_no.replace(/\s+/g, "").toUpperCase();
+    return `<div class="flt" data-flight="${f.id}">
+      <button class="flt-main" data-edit-flight="${f.id}">
+        <div class="flt-top">${who ? avatar(who, "sm") : ""}<strong>${esc(f.flight_no.toUpperCase())}</strong><span class="grow"></span>
+          ${lab ? `<span class="flt-pill ${lab[1]}">${esc(lab[0])}</span>` : ""}</div>
+        <div class="flt-route"><div><b>${esc(dep || "—")}</b><span>${esc(hm(depT))}${moved ? ` <s>${esc(hm(st.dep.sched.slice(11, 16)))}</s>` : ""}</span></div>
+          <div class="flt-line" aria-hidden="true">${ICON.plane}</div>
+          <div class="r"><b>${esc(arr || "—")}</b><span>${esc(hm(arrT))}</span></div></div>
+        <div class="flt-meta">${st?.airline ? esc(st.airline) + " · " : ""}${esc(fmtDate(f.flight_date, { weekday: "short", month: "short", day: "numeric" }))}${who ? ` · ${esc(who.id === session.user.id ? "You" : who.display_name || who.email || "")}` : ""}${bits.length ? " · " + bits.map(esc).join(" · ") : ""}${f.note ? ` · ${esc(f.note)}` : ""}</div>
+      </button>
+      <a class="flt-track" href="https://www.flightaware.com/live/flight/${encodeURIComponent(num)}" target="_blank" rel="noopener">Live tracking ↗</a>
+    </div>`;
+  }
+
+  async function renderOverview(id) {
+    if (!T || T.trip.id !== id) T = store.get("trip." + id, null);
+    EX = store.get("exp." + id, null); FL = store.get("flights." + id, null);
+    if (T) drawOverview(); else app.innerHTML = header({ title: "Trip", back: "#/" }) + `<main><p class="hint"><span class="spin"></span><span>Loading…</span></p></main>`;
+    const [fresh, ex, fl] = await Promise.all([fetchTrip(id), fetchExpenses(id).catch(() => EX), fetchFlights(id).catch(() => FL)]);
+    if (!fresh) { store.set("trip." + id, null); toast("That trip isn't available."); return go("#/"); }
+    T = fresh; cacheTrip(); if (ex) { EX = ex; cacheEx(); } if (fl) { FL = fl; store.set("flights." + id, FL); }
+    if (location.hash !== `#/trip/${id}`) return;
+    drawOverview();
+
+    const wx0 = T.trip.weather, t0 = today();
+    const notOver = !T.trip.end_date || T.trip.end_date >= t0;
+    const underway = notOver && (!T.trip.start_date || T.trip.start_date <= t0);
+    const maxAge = (underway ? 1 : wx0?.hours?.length ? 2 : 6) * 3600e3;
+    const stale = !wx0 || !("lat" in wx0) || (notOver && (Date.now() - new Date(wx0.fetched || 0) > maxAge || (wx0.kind !== "typical" && !("offset" in wx0)) || (underway && wx0.hours?.length && wxNow(wx0).hours.length < 46)));
+    if (T.trip.destination && stale) getWeather(T.trip).then(() => { if (location.hash === `#/trip/${id}`) drawOverview(); }).catch(() => {});
+    refreshFlights(id);
+
+    let h;
+    const again = () => { clearTimeout(h); h = setTimeout(refresh, 300); };
+    channel = sb.channel("overview-" + id)
+      .on("postgres_changes", { event: "*", schema: "public", table: "items", filter: `trip_id=eq.${id}` }, again)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "trips", filter: `id=eq.${id}` }, again)
+      .on("postgres_changes", { event: "*", schema: "public", table: "expenses", filter: `trip_id=eq.${id}` }, again)
+      .on("postgres_changes", { event: "*", schema: "public", table: "trip_flights", filter: `trip_id=eq.${id}` }, again)
+      .subscribe();
+    async function refresh() {
+      if (location.hash !== `#/trip/${id}`) return;
+      const [f, e2, fl2] = await Promise.all([fetchTrip(id).catch(() => null), fetchExpenses(id).catch(() => null), fetchFlights(id).catch(() => null)]);
+      if (f) { T = f; cacheTrip(); } if (e2) { EX = e2; cacheEx(); } if (fl2) { FL = fl2; store.set("flights." + id, FL); }
+      drawOverview();
+    }
+  }
+  // Ask for live status on flights from yesterday to 3 days out (the server caches, so this is cheap).
+  async function refreshFlights(id) {
+    if (!cfg.flights || !FL?.flights?.length || !navigator.onLine) return;
+    const t0 = today(), lo = new Date(Date.now() - 864e5).toISOString().slice(0, 10), hi = new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10);
+    let changed = false;
+    for (const f of FL.flights.filter((x) => x.flight_date >= lo && x.flight_date <= hi)) {
+      try {
+        const r = await api("/api/flight-status", { id: f.id });
+        if (r.status && JSON.stringify(r.status) !== JSON.stringify(f.status)) { f.status = r.status; Object.assign(f, r.filled || {}); changed = true; }
+      } catch {}
+    }
+    if (changed) { store.set("flights." + id, FL); if (location.hash === `#/trip/${id}`) drawOverview(); }
+    void t0;
+  }
+
+  function drawOverview() {
+    const { trip, items: all } = T, me_ = session.user.id, cur = trip.currency || "USD";
+    const shared = T.members.length > 1;
+    const st = tripStatus(trip);
+    const mine = all.filter((i) => i.personal_of === me_ || (!shared && !i.personal_of) || (!i.personal_of && i.assigned_to === me_));
+    const group = all.filter((i) => !i.personal_of);
+    const done = (arr) => arr.filter((i) => i.packed).length;
+    const lastLeft = mine.filter((i) => i.pack_last && !i.packed).length;
+    const laundry = (shared ? mine : all).filter((i) => i.laundry).length;
+    const ex = EX?.tripId === trip.id ? EX : null;
+    const total = ex ? ex.expenses.reduce((a, e) => a + e.amount_cents, 0) : (T.expensesTotal || 0);
+    const pairs = ex ? balances(ex) : [];
+    const myNet = pairs.reduce((a, p) => a + (p.to === me_ ? p.cents : p.from === me_ ? -p.cents : 0), 0);
+    const flights = FL?.tripId === trip.id ? FL.flights : [];
+    const byDir = ["out", "back", "other"].map((d) => [d, flights.filter((f) => f.direction === d)]).filter(([, l]) => l.length);
+    const scrollY = window.scrollY;
+
+    app.innerHTML = header({ title: trip.name, back: "#/", more: true, sub: [dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · ") }) + `<main class="ov">
+      ${tripTabs("overview")}
+      <section class="card ov-hero ${st.tone}">
+        <div><div class="ov-big">${esc(st.big)}</div><div class="ov-small">${esc(st.small)}</div></div>
+        ${!trip.start_date ? `<a class="pill" href="#/trip/${trip.id}/edit">Add dates</a>` : trip.destination ? `<span class="ov-place">📍 ${esc(trip.destination)}</span>` : ""}
+      </section>
+
+      <div class="ov-grid">
+        <a class="card ov-tile" href="#/trip/${trip.id}/pack">
+          ${ring(done(mine), mine.length)}
+          <div class="grow"><div class="ov-k">Packing</div>
+            <div class="ov-v">${mine.length ? (done(mine) === mine.length ? "All packed ✓" : `${done(mine)} of ${mine.length} packed`) : "Nothing on your list yet"}</div>
+            <div class="ov-s">${[shared ? `Group ${done(group)}/${group.length}` : "", lastLeft ? `⏰ ${lastLeft} to pack last` : "", laundry ? `🧺 ${laundry} in laundry` : ""].filter(Boolean).join(" · ") || "Open your list"}</div></div>
+          <span class="ov-go" aria-hidden="true">›</span></a>
+        <a class="card ov-tile" href="#/trip/${trip.id}/expenses">
+          <div class="ov-ic" aria-hidden="true">💸</div>
+          <div class="grow"><div class="ov-k">Expenses</div>
+            <div class="ov-v">${total ? esc(money(total, cur)) + " spent" : "No expenses yet"}</div>
+            <div class="ov-s ${myNet > 0 ? "plus" : myNet < 0 ? "minus" : ""}">${!shared ? "Log costs as you go" : myNet > 0 ? `You're owed ${esc(money(myNet, cur))}` : myNet < 0 ? `You owe ${esc(money(-myNet, cur))}` : total ? "You're all square ✓" : "Split costs with the group"}</div></div>
+          <span class="ov-go" aria-hidden="true">›</span></a>
+      </div>
+
+      ${weatherCard(trip)}
+
+      <section class="card ov-sec">
+        <div class="ov-head"><h2>✈️ Flights</h2><button class="pill" id="addFlight">+ Add flight</button></div>
+        ${FL?.unavailable ? `<p class="hint" style="margin:0">Flights aren't available yet.</p>`
+          : flights.length ? byDir.map(([d, l]) => `<div class="flt-dir">${DIR[d]}</div>${l.map(flightRow).join("")}`).join("")
+          : `<p class="hint" style="margin:0">Add your flight number and Pack shows times${cfg.flights ? ", gates and live delays" : " and a link to live tracking"} here for everyone on the trip.</p>`}
+        ${flights.length && !cfg.flights ? `<p class="hint flt-note">Tap Live tracking for gates and delays.</p>` : ""}
+      </section>
+
+      <section class="card ov-sec">
+        <div class="ov-head"><h2>👥 ${shared ? `${T.members.length} people` : "Who's going"}</h2><button class="pill" id="ovShare">${shared ? "Invite" : "Invite people"}</button></div>
+        <div class="ov-people">${T.members.map((m) => { const p = profileOf(m.user_id); const nf = flights.filter((f) => f.user_id === m.user_id).length;
+          return `<div class="ov-person">${avatar(p)}<div class="grow"><div class="nm">${esc(m.user_id === me_ ? "You" : p.display_name || p.email || "Someone")}${m.role === "owner" ? ' <span class="badge">Organizer</span>' : ""}</div>
+            <div class="muted">${[nf ? `${nf} flight${nf === 1 ? "" : "s"}` : "", p.venmo ? "Venmo ✓" : ""].filter(Boolean).join(" · ") || (m.user_id === me_ ? "That's you" : "On this trip")}</div></div></div>`; }).join("")}</div>
+        ${shared ? "" : `<p class="hint" style="margin:10px 0 0">Share the trip to pack together, split costs and see each other's flights.</p>`}
+      </section>
+
+      ${trip.details ? `<section class="card ov-sec"><div class="ov-head"><h2>📝 Notes</h2><a class="pill" href="#/trip/${trip.id}/edit">Edit</a></div><p class="ov-notes">${esc(trip.details)}</p></section>` : ""}
+    </main>`;
+    window.scrollTo(0, scrollY);
+    $$("[data-wx]").forEach((b) => b.addEventListener("click", () => { wxOpen[b.dataset.wx] = !wxOpen[b.dataset.wx]; drawOverview(); }));
+    $("#moreBtn").addEventListener("click", () => tripMenu(T.members.find((m) => m.role === "owner")?.user_id === me_));
+    $("#ovShare").addEventListener("click", shareTrip);
+    $("#addFlight").addEventListener("click", () => FL?.unavailable ? toast("Flights aren't available yet.") : flightSheet(null));
+    $$("[data-edit-flight]").forEach((b) => b.addEventListener("click", () => flightSheet(flights.find((f) => f.id === b.dataset.editFlight))));
+  }
+
+  function flightSheet(f) {
+    const trip = T.trip, me_ = session.user.id;
+    const lastBack = FL?.flights?.filter((x) => x.direction === "out").length && !FL.flights.some((x) => x.direction === "back");
+    const dir = f?.direction || (lastBack ? "back" : "out");
+    const dateFor = (d) => (d === "back" ? trip.end_date : trip.start_date) || today();
+    openSheet(`<h2>${f ? "Edit flight" : "Add a flight"}</h2><form id="ff" autocomplete="off">
+      <label class="f">Which way</label><div class="seg wide" id="fdir">${Object.entries({ out: "Going", back: "Coming home", other: "Other" }).map(([k, l]) => `<button type="button" data-k="${k}" class="${dir === k ? "on" : ""}">${l}</button>`).join("")}</div>
+      <div class="row2"><div><label class="f" for="fno">Flight number</label><input class="t" id="fno" value="${esc(f?.flight_no || "")}" placeholder="AS 1234" required maxlength="12" autocapitalize="characters" spellcheck="false"></div>
+        <div><label class="f" for="fdate">Date</label><input class="t" id="fdate" type="date" value="${esc(f?.flight_date || dateFor(dir))}" required></div></div>
+      ${T.members.length > 1 ? `<label class="f" for="fwho">Who's flying</label><select class="t" id="fwho">${T.members.map((m) => `<option value="${m.user_id}"${(f ? f.user_id : me_) === m.user_id ? " selected" : ""}>${esc(m.user_id === me_ ? "Me" : nameOf(m.user_id))}</option>`).join("")}</select>` : ""}
+      <p class="hint" style="margin:10px 2px 0">${cfg.flights ? "Pack looks up the airports, times, gates and delays. Fill these in only if it can't find your flight." : "Optional, so everyone can see when you land."}</p>
+      <div class="row2"><div><label class="f" for="fdep">From</label><input class="t" id="fdep" value="${esc(f?.dep_airport || "")}" placeholder="SEA" maxlength="40" autocapitalize="characters"></div>
+        <div><label class="f" for="farr">To</label><input class="t" id="farr" value="${esc(f?.arr_airport || "")}" placeholder="LAX" maxlength="40" autocapitalize="characters"></div></div>
+      <div class="row2"><div><label class="f" for="fdt">Departs</label><input class="t" id="fdt" type="time" value="${esc(f?.dep_time || "")}"></div>
+        <div><label class="f" for="fat">Arrives</label><input class="t" id="fat" type="time" value="${esc(f?.arr_time || "")}"></div></div>
+      <label class="f" for="fnote">Note <small>(optional)</small></label><input class="t" id="fnote" value="${esc(f?.note || "")}" placeholder="Seat 14C, picking up the rental car" maxlength="200">
+      <p class="hint" id="ferr" role="alert" style="color:var(--err)"></p>
+      <button class="primary" type="submit">${f ? "Save" : "Add flight"}</button>
+      ${f ? `<button class="danger-btn" type="button" id="fdel">Remove flight</button>` : ""}</form>`);
+    $("#fdir").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-k]"); if (!b) return;
+      $$("button", $("#fdir")).forEach((x) => x.classList.toggle("on", x === b));
+      if (!f && $("#fdate").value === dateFor(b.dataset.k === "back" ? "out" : "back")) $("#fdate").value = dateFor(b.dataset.k);
+    });
+    $("#ff").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const no = $("#fno").value.trim().toUpperCase().replace(/\s+/g, " ");
+      if (!/^[A-Z0-9]{2,3}\s?\d{1,5}[A-Z]?$/.test(no)) { $("#ferr").textContent = "Use the airline code and number, like AS 1234."; return; }
+      const row = { direction: $("#fdir .on")?.dataset.k || "out", flight_no: no, flight_date: $("#fdate").value,
+        user_id: $("#fwho")?.value || me_, dep_airport: $("#fdep").value.trim().toUpperCase(), arr_airport: $("#farr").value.trim().toUpperCase(),
+        dep_time: $("#fdt").value || "", arr_time: $("#fat").value || "", note: $("#fnote").value.trim() };
+      const b = e.submitter || $("#ff .primary"); busy(b, true, "Saving…");
+      try {
+        let saved;
+        if (f) { must(await sb.from("trip_flights").update(row).eq("id", f.id)); saved = Object.assign(f, row); if (f.flight_no !== no) saved.status = null; }
+        else { saved = must(await sb.from("trip_flights").insert({ ...row, trip_id: trip.id, created_by: me_ }).select("*").single()); FL.flights.push(saved); }
+        FL.flights.sort((a, b2) => (a.flight_date + a.dep_time).localeCompare(b2.flight_date + b2.dep_time));
+        store.set("flights." + trip.id, FL); closeSheet(); drawOverview(); toast(f ? "Flight saved" : "Flight added");
+        if (cfg.flights) api("/api/flight-status", { id: saved.id }).then((r) => { if (r.status) { saved.status = r.status; Object.assign(saved, r.filled || {}); store.set("flights." + trip.id, FL); drawOverview(); } else if (r.notFound) toast("Couldn't find live info for that flight. Check the number and date."); }).catch(() => {});
+      } catch (err) { busy(b, false); $("#ferr").textContent = err.message; }
+    });
+    $("#fdel")?.addEventListener("click", async () => {
+      if (!confirm("Remove this flight?")) return;
+      try { must(await sb.from("trip_flights").delete().eq("id", f.id)); FL.flights = FL.flights.filter((x) => x.id !== f.id); store.set("flights." + trip.id, FL); closeSheet(); drawOverview(); }
+      catch (err) { fail(err); }
     });
   }
 

@@ -11,7 +11,7 @@ export function buildReminder(r) {
   const first = (r.display_name || "").trim().split(/\s+/)[0];
   const left = Number(r.items_left || 0), total = Number(r.items_total || 0), mine = Number(r.mine_left || 0);
   const last = (r.pack_last || []).filter(Boolean);
-  const url = `${SITE}/#/trip/${r.trip_id}`;
+  const url = `${SITE}/#/trip/${r.trip_id}/pack`;
   const where = r.destination ? ` to ${r.destination}` : "";
   const subject = left
     ? `Tomorrow: ${r.trip_name} · ${left} item${left === 1 ? "" : "s"} left to pack`

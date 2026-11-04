@@ -33,6 +33,7 @@ weather-aware suggestions. Trips can be shared so a group packs together.
 | `PACK_DAILY_LIMIT` | optional, smart sorts per person per day, default 50 (resets at midnight in each person's time zone) |
 | `PACK_SITE_DAILY_LIMIT` | optional, smart sorts for everyone combined per day, default 1000 |
 | `RESEND_API_KEY` | resend.com → API Keys (day-before reminder emails; domain spruceandsound.com verified in Resend) |
+| `AERODATABOX_KEY` | optional, rapidapi.com → AeroDataBox → subscribe (free tier) → your RapidAPI key; turns on live flight status |
 | `PACK_FROM_EMAIL` | optional, default `Pack <hello@spruceandsound.com>` |
 
 ## Content calendar (admin only)
@@ -48,6 +49,14 @@ People can add a Venmo username or profile link on the You tab (`profiles.venmo`
 On a trip's Expenses tab, anyone who owes a share sees "Pay … on Venmo" (per expense, and "Pay" on each
 settle-up row). Phones open the Venmo app with the recipient, amount and note filled in, falling back to
 venmo.com; computers open venmo.com. Coming back to Pack offers to mark the share paid back. USD trips only.
+
+## Trip overview and flights
+
+Opening a trip shows an overview (`#/trip/:id`): countdown, packing and expenses tiles, weather, flights,
+people and notes. The packing list is `#/trip/:id/pack`, expenses `#/trip/:id/expenses`.
+Flights live in `trip_flights` (`supabase/12-trip-flights.sql`). For live status, gates and delays, set
+`AERODATABOX_KEY` (a RapidAPI key subscribed to AeroDataBox) in Netlify; `/api/flight-status` caches results
+for 10 minutes near travel day. Without the key, flights show what people entered plus a FlightAware link.
 
 ## Policies and account controls
 

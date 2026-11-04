@@ -4,6 +4,10 @@
 //   POST /api/weather  → { destination, start, end, units } → forecast or typical weather
 //   POST /api/sort     → signed-in only; counts against the daily limit; Claude sorts items
 //   POST /api/delete-account → signed-in only; { confirm: "DELETE" } permanently deletes the account
+//   POST /api/flight-status  → signed-in trip members; { id } → live status for a saved flight (needs AERODATABOX_KEY)
+//
+//   AERODATABOX_KEY        optional, RapidAPI key for AeroDataBox (live flight status). Without it, flights show
+//                          what people typed in plus a link to FlightAware.
 //
 // Environment variables (Netlify → Project configuration → Environment variables):
 //   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY   (Supabase → Project Settings → API)
@@ -15,7 +19,7 @@
 import { buildReminder, sendEmail } from "../lib/reminder-email.mjs";
 
 export const config = {
-  path: ["/api/config", "/api/weather", "/api/sort", "/api/test-reminder", "/api/delete-account"],
+  path: ["/api/config", "/api/weather", "/api/sort", "/api/test-reminder", "/api/delete-account", "/api/flight-status"],
   rateLimit: { windowLimit: 30, windowSize: 60, aggregateBy: ["ip", "domain"] },
 };
 
@@ -140,6 +144,70 @@ async function currentUser(req) {
   if (!r.ok) return null;
   const u = await r.json().catch(() => null);
   return u?.id ? u : null;
+}
+
+// ───────────────────────── flights (AeroDataBox via RapidAPI) ─────────────────────────
+
+const minutesBetween = (a, b) => (a && b ? Math.round((Date.parse(b.replace(" ", "T")) - Date.parse(a.replace(" ", "T"))) / 60000) : 0);
+const localHM = (t) => (t?.local ? String(t.local).slice(0, 16) : "");
+function shapeFlight(f) {
+  const side = (x, arr) => {
+    const sched = x?.scheduledTime, est = x?.revisedTime || x?.predictedTime || x?.runwayTime;
+    return {
+      iata: x?.airport?.iata || "", city: x?.airport?.municipalityName || x?.airport?.shortName || x?.airport?.name || "",
+      sched: localHM(sched), est: localHM(est), late: est && sched ? minutesBetween(sched.utc, est.utc) : 0,
+      terminal: x?.terminal || "", gate: x?.gate || "", ...(arr ? { belt: x?.baggageBelt || "" } : {}),
+    };
+  };
+  return { state: f.status || "Unknown", number: f.number || "", airline: f.airline?.name || "", aircraft: f.aircraft?.model || "",
+    dep: side(f.departure, false), arr: side(f.arrival, true), updated: f.lastUpdatedUtc || "" };
+}
+
+// Live status for one saved flight. The person must be on the trip (checked by reading the row as them).
+async function flightStatus(req) {
+  const user = await currentUser(req);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  const { id } = await req.json().catch(() => ({}));
+  if (!/^[0-9a-f-]{36}$/i.test(id || "")) return json({ error: "Missing flight." }, 400);
+  const base = env("SUPABASE_URL");
+  const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  const rr = await fetch(`${base}/rest/v1/trip_flights?id=eq.${id}&select=*`, { headers: { apikey: env("SUPABASE_ANON_KEY"), authorization: `Bearer ${token}` } });
+  const row = (await rr.json().catch(() => []))?.[0];
+  if (!row) return json({ error: "That flight isn't on one of your trips." }, 404);
+  const key = env("AERODATABOX_KEY");
+  if (!key) return json({ configured: false, status: row.status || null });
+
+  // Re-check every 10 minutes around travel day, otherwise twice a day; nothing for flights long past.
+  const today = iso(new Date());
+  if (row.flight_date < addDays(today, -1)) return json({ configured: true, status: row.status || null });
+  const near = row.flight_date <= addDays(today, 1);
+  const ttl = (near ? 10 : 12 * 60) * 60000;
+  if (row.status_at && Date.now() - Date.parse(row.status_at) < ttl) return json({ configured: true, status: row.status, cached: true });
+
+  const num = row.flight_no.replace(/\s+/g, "").toUpperCase();
+  const r = await fetch(`https://aerodatabox.p.rapidapi.com/flights/number/${encodeURIComponent(num)}/${row.flight_date}?withAircraftImage=false&withLocation=false`, {
+    headers: { "X-RapidAPI-Key": key, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com" },
+  });
+  if (r.status === 204 || r.status === 404) return json({ configured: true, status: null, notFound: true });
+  if (!r.ok) { console.error("aerodatabox", r.status, (await r.text()).slice(0, 200)); return json({ configured: true, status: row.status || null, error: "Flight status isn't available right now." }); }
+  const list = await r.json().catch(() => []);
+  const legs = Array.isArray(list) ? list : [list];
+  const want = (row.dep_airport || "").trim().toUpperCase();
+  const leg = legs.find((f) => want && f?.departure?.airport?.iata === want) || legs[0];
+  if (!leg) return json({ configured: true, status: null, notFound: true });
+  const status = shapeFlight(leg);
+
+  // Save for everyone on the trip, and fill in airports and times nobody typed in.
+  const svc = env("SUPABASE_SERVICE_ROLE_KEY");
+  const patch = { status, status_at: new Date().toISOString() };
+  if (!row.dep_airport && status.dep.iata) patch.dep_airport = status.dep.iata;
+  if (!row.arr_airport && status.arr.iata) patch.arr_airport = status.arr.iata;
+  if (!row.dep_time && status.dep.sched) patch.dep_time = status.dep.sched.slice(11, 16);
+  if (!row.arr_time && status.arr.sched) patch.arr_time = status.arr.sched.slice(11, 16);
+  await fetch(`${base}/rest/v1/trip_flights?id=eq.${id}`, {
+    method: "PATCH", headers: { apikey: svc, authorization: `Bearer ${svc}`, "content-type": "application/json", prefer: "return=minimal" }, body: JSON.stringify(patch),
+  }).catch((e) => console.error("save flight status", e));
+  return json({ configured: true, status, filled: patch });
 }
 
 // Hands shared trips to the next member, then deletes the auth user (everything else cascades).
@@ -312,7 +380,7 @@ export default async (req) => {
   try {
     if (path === "/api/config" && req.method === "GET") {
       if (!env("SUPABASE_URL") || !env("SUPABASE_ANON_KEY")) return json({ error: "The app isn't set up yet (Supabase keys missing)." }, 503);
-      return json({ supabaseUrl: env("SUPABASE_URL"), supabaseAnonKey: env("SUPABASE_ANON_KEY"), dailyLimit: Number(env("PACK_DAILY_LIMIT", "50")) || 50 });
+      return json({ supabaseUrl: env("SUPABASE_URL"), supabaseAnonKey: env("SUPABASE_ANON_KEY"), dailyLimit: Number(env("PACK_DAILY_LIMIT", "50")) || 50, flights: !!env("AERODATABOX_KEY") });
     }
     if (req.method !== "POST") return json({ error: "Not found" }, 404);
     if (path === "/api/weather") {
@@ -322,6 +390,7 @@ export default async (req) => {
     }
     if (path === "/api/sort") return await sort(req);
     if (path === "/api/delete-account" && req.method === "POST") return await deleteAccount(req);
+    if (path === "/api/flight-status") return await flightStatus(req);
     if (path === "/api/test-reminder") return await testReminder(req);
     return json({ error: "Not found" }, 404);
   } catch (err) {

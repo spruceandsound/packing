@@ -504,3 +504,58 @@ button.share.paid{border-color:var(--line);border-color:color-mix(in srgb,var(--
 /* always bring (item sheet) */
 .always-row{margin-top:8px;margin-bottom:4px;border-color:var(--amber);border-color:color-mix(in srgb,var(--amber) 55%,var(--line))}
 .always-row input{accent-color:var(--amber)}
+
+/* trip overview (dashboard) */
+.ov .card{margin-bottom:12px}
+.ov-hero{display:flex;align-items:center;gap:12px;padding:18px;background:var(--pine);color:var(--on-pine);border-color:var(--pine)}
+.ov-hero>div{flex:1;min-width:0}
+.ov-big{font:800 30px/1.1 ui-rounded,-apple-system,system-ui,sans-serif;letter-spacing:-.02em}
+.ov-small{color:var(--on-pine-muted);margin-top:4px;font-size:15px}
+.ov-hero.soon .ov-big,.ov-hero.now .ov-big{color:var(--amber)}
+.ov-hero.past{background:var(--card);color:var(--ink);border-color:var(--line)}
+.ov-hero.past .ov-small{color:var(--muted)}
+.ov-place{flex:none;max-width:45%;font-size:14px;color:var(--on-pine-muted);text-align:right}
+.ov-hero.past .ov-place{color:var(--muted)}
+.ov-hero .pill{flex:none}
+.ov-grid{display:grid;grid-template-columns:1fr;gap:0}
+@media (min-width:620px){.ov-grid{grid-template-columns:1fr 1fr;gap:12px}.ov-grid .card{margin-bottom:12px}}
+.ov-tile{display:flex;align-items:center;gap:14px;padding:14px 14px 14px 16px;text-decoration:none;color:inherit}
+.ov-tile:active{transform:scale(.99)}
+.ov-ic{width:44px;height:44px;flex:none;border-radius:12px;background:var(--sunk);display:grid;place-items:center;font-size:22px}
+.ov-k{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.ov-v{font-weight:700;font-size:17px;margin-top:1px}
+.ov-s{font-size:14px;color:var(--muted);margin-top:2px}
+.ov-s.plus{color:var(--ok);font-weight:600}.ov-s.minus{color:var(--err);font-weight:600}
+.ov-go{flex:none;font-size:26px;line-height:1;color:var(--muted)}
+.ov-sec{padding:14px 16px}
+.ov-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.ov-head h2{flex:1;margin:0;font-size:17px}
+.ov-head .pill{padding:6px 12px;font-size:14px;text-decoration:none;color:inherit}
+.ov-people{display:flex;flex-direction:column;gap:10px}
+.ov-person{display:flex;align-items:center;gap:12px}
+.ov-person .nm{font-weight:650}
+.ov-person .muted{font-size:13.5px}
+.ov-notes{margin:0;white-space:pre-wrap;color:var(--ink)}
+.flt-dir{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:12px 0 6px}
+.flt-dir:first-of-type{margin-top:0}
+.flt{position:relative;border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--bg)}
+.flt-main{display:block;width:100%;border:0;background:none;text-align:left;padding:12px 14px;color:inherit;font:inherit;cursor:pointer}
+.flt-top{display:flex;align-items:center;gap:8px}
+.flt-top .muted{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flt-route{display:flex;align-items:center;gap:10px;margin:10px 0 6px}
+.flt-route>div{display:flex;flex-direction:column;min-width:0}
+.flt-route .r{align-items:flex-end;text-align:right}
+.flt-route b{font:800 22px/1.1 ui-rounded,-apple-system,system-ui,sans-serif;letter-spacing:.01em}
+.flt-route span{font-size:14px;color:var(--muted)}
+.flt-route s{opacity:.7}
+.flt-line{flex:1 !important;flex-direction:row !important;align-items:center;justify-content:center;height:2px;background:var(--line);position:relative;margin:0 4px}
+.flt-line svg{width:20px;height:20px;color:var(--muted);background:var(--bg);padding:0 3px;box-sizing:content-box}
+.flt-meta{font-size:13.5px;color:var(--muted)}
+.flt-pill{flex:none;font-size:12.5px;font-weight:700;border-radius:99px;padding:3px 9px;background:var(--sunk);color:var(--muted)}
+.flt-pill.ok{color:var(--ok);background:var(--sunk);background:color-mix(in srgb,var(--ok) 13%,transparent)}
+.flt-pill.warn{color:var(--amber-ink);background:var(--sunk);background:color-mix(in srgb,var(--amber) 22%,transparent)}
+.flt-pill.bad{color:var(--err);background:var(--sunk);background:color-mix(in srgb,var(--err) 13%,transparent)}
+.flt-pill.air{color:var(--sky);background:var(--sunk);background:color-mix(in srgb,var(--sky) 14%,transparent)}
+.flt-track{display:block;border-top:1px solid var(--line);padding:9px 14px;font-size:13.5px;font-weight:650;color:var(--sky);text-decoration:none}
+.flt .flt-pill{margin-right:0}
+.flt-note{margin:6px 0 0}
