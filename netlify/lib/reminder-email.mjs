@@ -7,7 +7,20 @@ function longDate(d) {
   return new Date(d + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
 }
 
+const clock = (hm) => { if (!hm) return ""; const [h, m] = hm.split(":").map(Number); return `${h % 12 || 12}:${String(m).padStart(2, "0")}${h < 12 ? "am" : "pm"}`; };
+const minus = (hm, mins) => { const [h, m] = hm.split(":").map(Number); const t = ((h * 60 + m - mins) % 1440 + 1440) % 1440; return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`; };
+// Flights tomorrow, with a "be at the airport by" time (2 hours before departure).
+function flightLines(r) {
+  return (r.flights || []).map((f) => {
+    const route = [f.dep_airport, f.arr_airport].filter(Boolean).join(" → ");
+    const times = f.dep_time ? `departs ${clock(f.dep_time)}${f.arr_time ? `, lands ${clock(f.arr_time)}` : ""}` : "";
+    return { head: `${f.flight_no}${route ? " · " + route : ""}`, times, by: f.dep_time ? clock(minus(f.dep_time, 120)) : "" };
+  });
+}
+
 export function buildReminder(r) {
+  const fl = flightLines(r);
+  const stay = (r.stays || [])[0];
   const first = (r.display_name || "").trim().split(/\s+/)[0];
   const left = Number(r.items_left || 0), total = Number(r.items_total || 0), mine = Number(r.mine_left || 0);
   const last = (r.pack_last || []).filter(Boolean);
@@ -27,6 +40,8 @@ export function buildReminder(r) {
     "",
     status,
     last.length ? `\nPack last (grab these on your way out):\n${last.map((n) => "- " + n).join("\n")}` : "",
+    fl.length ? `\nYour flight${fl.length > 1 ? "s" : ""}:\n${fl.map((f) => `- ${f.head}${f.times ? ", " + f.times : ""}${f.by ? `. Be at the airport by ${f.by} (2 hours before; 3 for international).` : ""}`).join("\n")}` : "",
+    stay ? `\nStaying at: ${stay.name}${stay.address ? ", " + stay.address : ""}${stay.check_in_time ? ` (check-in ${clock(stay.check_in_time)})` : ""}` : "",
     r.weather_summary ? `\nWeather: ${r.weather_summary}` : "",
     "",
     `Open your list: ${url}`,
@@ -49,6 +64,8 @@ export function buildReminder(r) {
   ${total ? `<div style="height:8px;background:#EDE6D8;border-radius:99px;overflow:hidden;margin:0 0 18px"><div style="height:8px;width:${Math.round(((total - left) / total) * 100)}%;background:#E8A84C"></div></div>` : ""}
   ${last.length ? `<p style="margin:0 0 6px;font-weight:700">Pack last</p><p style="margin:0 0 6px;color:#66706A;font-size:14px">Grab these on your way out:</p>
     <ul style="margin:0 0 16px;padding-left:20px">${last.map((n) => `<li style="margin:2px 0">${esc(n)}</li>`).join("")}</ul>` : ""}
+  ${fl.length ? `<p style="margin:0 0 6px;font-weight:700">Your flight${fl.length > 1 ? "s" : ""}</p>${fl.map((f) => `<div style="border:1px solid #E0D8C8;border-radius:12px;padding:10px 14px;margin:0 0 8px"><div style="font-weight:700">${esc(f.head)}</div>${f.times ? `<div style="font-size:14px;color:#66706A">${esc(f.times[0].toUpperCase() + f.times.slice(1))}</div>` : ""}${f.by ? `<div style="font-size:14px;margin-top:4px">Be at the airport by <b>${esc(f.by)}</b> <span style="color:#66706A">(2 hours before; 3 for international)</span></div>` : ""}</div>`).join("")}<div style="height:8px"></div>` : ""}
+  ${stay ? `<p style="margin:0 0 4px;font-weight:700">Staying at</p><p style="margin:0 0 16px;font-size:15px">${esc(stay.name)}${stay.address ? `<br><span style="color:#66706A">${esc(stay.address)}</span>` : ""}${stay.check_in_time ? `<br><span style="color:#66706A">Check-in ${esc(clock(stay.check_in_time))}</span>` : ""}</p>` : ""}
   ${r.weather_summary ? `<p style="margin:0 0 18px;font-size:14px;color:#66706A">${esc(r.weather_summary)}</p>` : ""}
   <a href="${url}" style="display:inline-block;background:#1F3D34;color:#F4ECDC;text-decoration:none;font-weight:700;padding:13px 22px;border-radius:12px">Open your list</a>
 </td></tr>

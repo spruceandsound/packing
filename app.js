@@ -1351,6 +1351,12 @@
 
   // ───────────────────────── trip overview (dashboard) ─────────────────────────
   let FL = null; // { tripId, flights: [...] }
+  let ST = null; // { tripId, stays: [...] }
+  async function fetchStays(id) {
+    const { data, error } = await sb.from("trip_stays").select("*").eq("trip_id", id).order("check_in_date", { nullsFirst: false }).order("created_at");
+    if (error) { if (/trip_stays|schema cache|does not exist/i.test(error.message)) return { tripId: id, stays: [], unavailable: true }; throw new Error(error.message); }
+    return { tripId: id, stays: data || [] };
+  }
   async function fetchFlights(id) {
     const { data, error } = await sb.from("trip_flights").select("*").eq("trip_id", id).order("flight_date").order("dep_time");
     if (error) { if (/trip_flights|schema cache|does not exist/i.test(error.message)) return { tripId: id, flights: [], unavailable: true }; throw new Error(error.message); }
@@ -1383,39 +1389,109 @@
     if (/expected|scheduled/.test(s)) return ["On time", "ok"];
     return null;
   };
+  // Airports (name, city, time zone) from /data/airports.json, loaded only when a trip has flights.
+  let AIRPORTS = null, airportsP = null;
+  const loadAirports = () => airportsP || (airportsP = fetch("/data/airports.json").then((r) => r.json()).then((d) => (AIRPORTS = d)).catch(() => { airportsP = null; return null; }));
+  const apt = (code) => { const a = AIRPORTS?.[String(code || "").toUpperCase()]; return a ? { name: a[0], city: a[1], region: a[2], country: a[3], tz: a[4] } : null; };
+  const aptShort = (a) => a ? (a.city || a.name.replace(/ International Airport$/i, " Intl").replace(/ Airport$/i, "")) : "";
+  // UTC time for a local date + HH:MM in a time zone.
+  function zoned(date, hm, tz) {
+    if (!date || !hm || !tz) return null;
+    const [y, mo, d] = date.split("-").map(Number), [h, mi] = hm.split(":").map(Number);
+    let t = Date.UTC(y, mo - 1, d, h, mi);
+    for (let k = 0; k < 2; k++) {
+      try {
+        const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+        const seen = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute);
+        t += Date.UTC(y, mo - 1, d, h, mi) - seen;
+      } catch { return null; }
+    }
+    return t;
+  }
+  const dur = (ms) => { const m = Math.round(ms / 6e4); return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? " " + (m % 60) + "m" : ""}` : `${m}m`; };
+  // Departure/arrival instants worked out from the typed (or looked-up) local times and each airport's time zone.
+  function flightTimes(f) {
+    const st = f.status, dA = apt(f.dep_airport || st?.dep?.iata), aA = apt(f.arr_airport || st?.arr?.iata);
+    const depHM = (st?.dep?.est || st?.dep?.sched || "").slice(11, 16) || f.dep_time, arrHM = (st?.arr?.est || st?.arr?.sched || "").slice(11, 16) || f.arr_time;
+    const dep = zoned(f.flight_date, depHM, dA?.tz);
+    let arr = zoned(f.flight_date, arrHM, aA?.tz), nextDay = 0;
+    while (dep && arr && arr < dep && nextDay < 2) { nextDay++; arr = zoned(new Date(Date.parse(f.flight_date + "T12:00:00Z") + nextDay * 864e5).toISOString().slice(0, 10), arrHM, aA?.tz); }
+    const ok = dep && arr && arr > dep && arr - dep < 22 * 3600e3;
+    return { dA, aA, dep, arr: ok ? arr : null, nextDay: ok ? nextDay : 0, length: ok ? arr - dep : 0 };
+  }
+  // Without live data, say where the flight should be from its schedule.
+  function scheduleState(ft) {
+    const now = Date.now();
+    if (!ft.dep) return null;
+    if (now < ft.dep) { const left = ft.dep - now; return left < 48 * 3600e3 ? [`Leaves in ${dur(left)}`, "air"] : null; }
+    if (ft.arr && now < ft.arr) return ["Should be in the air", "air"];
+    if (ft.arr && now - ft.arr < 12 * 3600e3) return ["Should have landed", "ok"];
+    return null;
+  }
+  const AIRLINES = { AS: "Alaska", DL: "Delta", UA: "United", AA: "American", WN: "Southwest", B6: "JetBlue", NK: "Spirit", F9: "Frontier", HA: "Hawaiian", SY: "Sun Country", G4: "Allegiant", MX: "Breeze", QX: "Horizon", OO: "SkyWest", "9E": "Endeavor", YX: "Republic", AC: "Air Canada", WS: "WestJet", PD: "Porter", AM: "Aeromexico", Y4: "Volaris", BA: "British Airways", VS: "Virgin Atlantic", LH: "Lufthansa", AF: "Air France", KL: "KLM", EI: "Aer Lingus", IB: "Iberia", LX: "Swiss", OS: "Austrian", SK: "SAS", AY: "Finnair", TP: "TAP", AZ: "ITA", U2: "easyJet", FR: "Ryanair", DY: "Norwegian", TK: "Turkish", EK: "Emirates", QR: "Qatar", EY: "Etihad", QF: "Qantas", VA: "Virgin Australia", NZ: "Air New Zealand", JL: "JAL", NH: "ANA", KE: "Korean Air", OZ: "Asiana", CX: "Cathay Pacific", SQ: "Singapore", BR: "EVA Air", CI: "China Airlines", LA: "LATAM", AV: "Avianca", CM: "Copa" };
+  const airlineOf = (no) => AIRLINES[String(no || "").toUpperCase().replace(/\s+/g, "").slice(0, 2)] || "";
+  const at = (ms, tz) => { try { return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", timeZone: tz }).replace(/\s?([AP])M/i, (m, p) => p.toLowerCase() + "m"); } catch { return ""; } };
+  const mapsUrl = (q) => (isIOS ? "https://maps.apple.com/?q=" : "https://www.google.com/maps/search/?api=1&query=") + encodeURIComponent(q);
   const DIR = { out: "Going", back: "Coming home", other: "Other flights" };
   function flightRow(f) {
-    const st = f.status, lab = FLIGHT_STATE(st);
+    const st = f.status, ft = flightTimes(f), lab = FLIGHT_STATE(st) || scheduleState(ft);
     const dep = (f.dep_airport || st?.dep?.iata || "").toUpperCase(), arr = (f.arr_airport || st?.arr?.iata || "").toUpperCase();
     const hm = (x) => (x ? clock(x) : "");
     const depT = st?.dep?.est && st.dep.est !== st.dep.sched ? st.dep.est.slice(11, 16) : st?.dep?.sched?.slice(11, 16) || f.dep_time;
     const arrT = st?.arr?.est && st.arr.est !== st.arr.sched ? st.arr.est.slice(11, 16) : st?.arr?.sched?.slice(11, 16) || f.arr_time;
     const moved = st?.dep?.est && st?.dep?.sched && st.dep.est !== st.dep.sched;
-    const bits = [st?.dep?.terminal && `Terminal ${st.dep.terminal}`, st?.dep?.gate && `Gate ${st.dep.gate}`, st?.arr?.belt && `Bags: belt ${st.arr.belt}`].filter(Boolean);
+    const bits = [ft.length ? dur(ft.length) : "", st?.dep?.terminal && `Terminal ${st.dep.terminal}`, st?.dep?.gate && `Gate ${st.dep.gate}`, st?.arr?.belt && `Bags: belt ${st.arr.belt}`].filter(Boolean);
     const who = f.user_id ? profileOf(f.user_id) : null;
     const num = f.flight_no.replace(/\s+/g, "").toUpperCase();
+    const airline = st?.airline || airlineOf(f.flight_no);
+    const tzNote = ft.aA && ft.dA && ft.aA.tz !== ft.dA.tz ? " local" : "";
     return `<div class="flt" data-flight="${f.id}">
       <button class="flt-main" data-edit-flight="${f.id}">
-        <div class="flt-top">${who ? avatar(who, "sm") : ""}<strong>${esc(f.flight_no.toUpperCase())}</strong><span class="grow"></span>
+        <div class="flt-top">${who ? avatar(who, "sm") : ""}<strong>${esc(f.flight_no.toUpperCase())}</strong>${airline ? `<span class="muted flt-al">${esc(airline)}</span>` : ""}<span class="grow"></span>
           ${lab ? `<span class="flt-pill ${lab[1]}">${esc(lab[0])}</span>` : ""}</div>
-        <div class="flt-route"><div><b>${esc(dep || "—")}</b><span>${esc(hm(depT))}${moved ? ` <s>${esc(hm(st.dep.sched.slice(11, 16)))}</s>` : ""}</span></div>
+        <div class="flt-route"><div><b>${esc(dep || "—")}</b><span class="flt-city">${esc(aptShort(ft.dA))}</span><span>${esc(hm(depT))}${moved ? ` <s>${esc(hm(st.dep.sched.slice(11, 16)))}</s>` : ""}</span></div>
           <div class="flt-line" aria-hidden="true">${ICON.plane}</div>
-          <div class="r"><b>${esc(arr || "—")}</b><span>${esc(hm(arrT))}</span></div></div>
-        <div class="flt-meta">${st?.airline ? esc(st.airline) + " · " : ""}${esc(fmtDate(f.flight_date, { weekday: "short", month: "short", day: "numeric" }))}${who ? ` · ${esc(who.id === session.user.id ? "You" : who.display_name || who.email || "")}` : ""}${bits.length ? " · " + bits.map(esc).join(" · ") : ""}${f.note ? ` · ${esc(f.note)}` : ""}</div>
+          <div class="r"><b>${esc(arr || "—")}</b><span class="flt-city">${esc(aptShort(ft.aA))}</span><span>${esc(hm(arrT))}${arrT && tzNote ? tzNote : ""}${ft.nextDay ? ` <sup>+${ft.nextDay}</sup>` : ""}</span></div></div>
+        <div class="flt-meta">${esc(fmtDate(f.flight_date, { weekday: "short", month: "short", day: "numeric" }))}${who ? ` · ${esc(who.id === session.user.id ? "You" : who.display_name || who.email || "")}` : ""}${bits.length ? " · " + bits.map(esc).join(" · ") : ""}${f.note ? ` · ${esc(f.note)}` : ""}</div>
       </button>
-      <a class="flt-track" href="https://www.flightaware.com/live/flight/${encodeURIComponent(num)}" target="_blank" rel="noopener">Live tracking ↗</a>
+      <div class="flt-links"><a href="https://www.google.com/search?q=${encodeURIComponent(num + " flight status")}" target="_blank" rel="noopener">Live status ↗</a><a href="https://www.flightaware.com/live/flight/${encodeURIComponent(num)}" target="_blank" rel="noopener">FlightAware ↗</a></div>
+    </div>`;
+  }
+  // Group trips: who lands when on the way there, with the last arrival flagged (handy for planning pickups).
+  function arrivalsLine(flights) {
+    const per = new Map();
+    for (const f of flights.filter((x) => x.direction === "out" && x.user_id)) { const ft = flightTimes(f); if (!ft.arr) continue; const cur = per.get(f.user_id); if (!cur || ft.arr > cur.arr) per.set(f.user_id, { arr: ft.arr, tz: ft.aA?.tz }); }
+    if (per.size < 2) return "";
+    const list = [...per.entries()].sort((a, b) => a[1].arr - b[1].arr);
+    const day = (ms, tz) => { try { return new Date(ms).toLocaleDateString(undefined, { weekday: "short", timeZone: tz }); } catch { return ""; } };
+    const multiDay = new Set(list.map(([, v]) => day(v.arr, v.tz))).size > 1;
+    return `<div class="arrivals"><div class="arr-h">🛬 Landing</div>${list.map(([u, v], i) => (v.lastIn = v.arr === list[list.length - 1][1].arr, `<span class="arr-c${v.lastIn ? " last" : ""}">${avatar(profileOf(u), "sm")}${esc(u === session.user.id ? "You" : String(nameOf(u)).split(/[\s@]/)[0])} <b>${esc((multiDay ? day(v.arr, v.tz) + " " : "") + at(v.arr, v.tz))}</b>${v.lastIn ? " <small>last in</small>" : ""}</span>`)).join("")}</div>`;
+  }
+  function stayRow(x) {
+    const t0 = today();
+    const when = (d, hmv) => [d ? fmtDate(d, { weekday: "short", month: "short", day: "numeric" }) : "", hmv ? clock(hmv) : ""].filter(Boolean).join(", ");
+    const nights = x.check_in_date && x.check_out_date ? Math.round((new Date(x.check_out_date + "T12:00:00") - new Date(x.check_in_date + "T12:00:00")) / 864e5) : 0;
+    const tag = x.check_in_date === t0 ? ["Check-in today", "air"] : x.check_out_date === t0 ? ["Check-out today", "warn"] : x.check_in_date && x.check_out_date && x.check_in_date < t0 && t0 < x.check_out_date ? ["Staying now", "ok"] : null;
+    return `<div class="stay"><button class="stay-main" data-edit-stay="${x.id}">
+      <div class="flt-top"><strong>${esc(x.name)}</strong><span class="grow"></span>${tag ? `<span class="flt-pill ${tag[1]}">${esc(tag[0])}</span>` : ""}</div>
+      ${x.address ? `<div class="stay-addr">${esc(x.address)}</div>` : ""}
+      ${x.check_in_date || x.check_in_time || x.check_out_date ? `<div class="stay-times"><div><span>Check-in</span><b>${esc(when(x.check_in_date, x.check_in_time) || "—")}</b></div><div><span>Check-out</span><b>${esc(when(x.check_out_date, x.check_out_time) || "—")}</b></div>${nights > 0 ? `<div><span>Nights</span><b>${nights}</b></div>` : ""}</div>` : ""}
+      ${x.note ? `<div class="flt-meta">${esc(x.note)}</div>` : ""}</button>
+      ${x.address ? `<div class="flt-links"><a href="${mapsUrl(x.name + ", " + x.address)}" target="_blank" rel="noopener">Directions ↗</a><button type="button" class="linkbtn" data-copy-addr="${esc(x.address)}">Copy address</button></div>` : ""}
     </div>`;
   }
 
   async function renderOverview(id) {
     if (!T || T.trip.id !== id) T = store.get("trip." + id, null);
-    EX = store.get("exp." + id, null); FL = store.get("flights." + id, null);
+    EX = store.get("exp." + id, null); FL = store.get("flights." + id, null); ST = store.get("stays." + id, null);
+    if (FL?.flights?.length) loadAirports().then(() => { if (location.hash === `#/trip/${id}`) drawOverview(); });
     if (T) drawOverview(); else app.innerHTML = header({ title: "Trip", back: "#/" }) + `<main><p class="hint"><span class="spin"></span><span>Loading…</span></p></main>`;
-    const [fresh, ex, fl] = await Promise.all([fetchTrip(id), fetchExpenses(id).catch(() => EX), fetchFlights(id).catch(() => FL)]);
+    const [fresh, ex, fl, sty] = await Promise.all([fetchTrip(id), fetchExpenses(id).catch(() => EX), fetchFlights(id).catch(() => FL), fetchStays(id).catch(() => ST)]);
     if (!fresh) { store.set("trip." + id, null); toast("That trip isn't available."); return go("#/"); }
-    T = fresh; cacheTrip(); if (ex) { EX = ex; cacheEx(); } if (fl) { FL = fl; store.set("flights." + id, FL); }
+    T = fresh; cacheTrip(); if (ex) { EX = ex; cacheEx(); } if (fl) { FL = fl; store.set("flights." + id, FL); } if (sty) { ST = sty; store.set("stays." + id, ST); }
     if (location.hash !== `#/trip/${id}`) return;
     drawOverview();
+    if (FL?.flights?.length && !AIRPORTS) loadAirports().then(() => { if (location.hash === `#/trip/${id}`) drawOverview(); });
 
     const wx0 = T.trip.weather, t0 = today();
     const notOver = !T.trip.end_date || T.trip.end_date >= t0;
@@ -1432,11 +1508,12 @@
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "trips", filter: `id=eq.${id}` }, again)
       .on("postgres_changes", { event: "*", schema: "public", table: "expenses", filter: `trip_id=eq.${id}` }, again)
       .on("postgres_changes", { event: "*", schema: "public", table: "trip_flights", filter: `trip_id=eq.${id}` }, again)
+      .on("postgres_changes", { event: "*", schema: "public", table: "trip_stays", filter: `trip_id=eq.${id}` }, again)
       .subscribe();
     async function refresh() {
       if (location.hash !== `#/trip/${id}`) return;
-      const [f, e2, fl2] = await Promise.all([fetchTrip(id).catch(() => null), fetchExpenses(id).catch(() => null), fetchFlights(id).catch(() => null)]);
-      if (f) { T = f; cacheTrip(); } if (e2) { EX = e2; cacheEx(); } if (fl2) { FL = fl2; store.set("flights." + id, FL); }
+      const [f, e2, fl2, st2] = await Promise.all([fetchTrip(id).catch(() => null), fetchExpenses(id).catch(() => null), fetchFlights(id).catch(() => null), fetchStays(id).catch(() => null)]);
+      if (f) { T = f; cacheTrip(); } if (e2) { EX = e2; cacheEx(); } if (fl2) { FL = fl2; store.set("flights." + id, FL); if (FL.flights.length) loadAirports(); } if (st2) { ST = st2; store.set("stays." + id, ST); }
       drawOverview();
     }
   }
@@ -1470,6 +1547,7 @@
     const myNet = pairs.reduce((a, p) => a + (p.to === me_ ? p.cents : p.from === me_ ? -p.cents : 0), 0);
     const flights = FL?.tripId === trip.id ? FL.flights : [];
     const byDir = ["out", "back", "other"].map((d) => [d, flights.filter((f) => f.direction === d)]).filter(([, l]) => l.length);
+    const stays = ST?.tripId === trip.id ? ST.stays : [];
     const scrollY = window.scrollY;
 
     app.innerHTML = header({ title: trip.name, back: "#/", more: true, sub: [dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · ") }) + `<main class="ov">
@@ -1497,11 +1575,20 @@
       ${weatherCard(trip)}
 
       <section class="card ov-sec">
+        <div class="ov-head"><h2>🏡 ${shared ? "Where we're staying" : "Where I'm staying"}</h2><button class="pill" id="addStay">+ Add</button></div>
+        ${ST?.unavailable ? `<p class="hint" style="margin:0">This isn't available yet.</p>`
+          : stays.length ? stays.map(stayRow).join("")
+          : `<p class="hint" style="margin:0 0 10px">Add the hotel, rental or campsite so ${shared ? "everyone has" : "you have"} the address and check-in time in one place.</p>`}
+      </section>
+
+      <button class="card ov-import" id="importBtn"><span class="ov-ic" aria-hidden="true">📋</span><span class="grow"><strong>Paste a confirmation</strong><span class="muted">Flight or booking email, or a screenshot. Pack fills in flights and stays.</span></span><span class="ov-go" aria-hidden="true">›</span></button>
+
+      <section class="card ov-sec">
         <div class="ov-head"><h2>✈️ Flights</h2><button class="pill" id="addFlight">+ Add flight</button></div>
+        ${shared ? arrivalsLine(flights) : ""}
         ${FL?.unavailable ? `<p class="hint" style="margin:0">Flights aren't available yet.</p>`
           : flights.length ? byDir.map(([d, l]) => `<div class="flt-dir">${DIR[d]}</div>${l.map(flightRow).join("")}`).join("")
-          : `<p class="hint" style="margin:0">Add your flight number and Pack shows times${cfg.flights ? ", gates and live delays" : " and a link to live tracking"} here for everyone on the trip.</p>`}
-        ${flights.length && !cfg.flights ? `<p class="hint flt-note">Tap Live tracking for gates and delays.</p>` : ""}
+          : `<p class="hint" style="margin:0">Add flights or paste a confirmation. Pack shows times, length and ${shared ? "who lands when" : "a countdown"}, with links to live status.</p>`}
       </section>
 
       <section class="card ov-sec">
@@ -1520,6 +1607,121 @@
     $("#ovShare").addEventListener("click", shareTrip);
     $("#addFlight").addEventListener("click", () => FL?.unavailable ? toast("Flights aren't available yet.") : flightSheet(null));
     $$("[data-edit-flight]").forEach((b) => b.addEventListener("click", () => flightSheet(flights.find((f) => f.id === b.dataset.editFlight))));
+    $("#addStay").addEventListener("click", () => ST?.unavailable ? toast("This isn't available yet.") : staySheet(null));
+    $$("[data-edit-stay]").forEach((b) => b.addEventListener("click", () => staySheet(stays.find((x) => x.id === b.dataset.editStay))));
+    $$("[data-copy-addr]").forEach((b) => b.addEventListener("click", async () => { try { await navigator.clipboard.writeText(b.dataset.copyAddr); toast("Address copied"); } catch { toast(b.dataset.copyAddr); } }));
+    $("#importBtn").addEventListener("click", importSheet);
+  }
+
+  function staySheet(x) {
+    const trip = T.trip;
+    openSheet(`<h2>${x ? "Edit stay" : T.members.length > 1 ? "Where we're staying" : "Where I'm staying"}</h2><form id="sf" autocomplete="off">
+      <label class="f" for="sname">Name</label><input class="t" id="sname" value="${esc(x?.name || "")}" placeholder="Hotel, rental or campsite" required maxlength="120">
+      <label class="f" for="saddr">Address</label><input class="t" id="saddr" value="${esc(x?.address || "")}" placeholder="Street, city" maxlength="300">
+      <div class="row2"><div><label class="f" for="sind">Check-in</label><input class="t" id="sind" type="date" value="${esc(x?.check_in_date || trip.start_date || "")}"></div>
+        <div><label class="f" for="sint">Time</label><input class="t" id="sint" type="time" value="${esc(x?.check_in_time || "")}"></div></div>
+      <div class="row2"><div><label class="f" for="soutd">Check-out</label><input class="t" id="soutd" type="date" value="${esc(x?.check_out_date || trip.end_date || "")}"></div>
+        <div><label class="f" for="soutt">Time</label><input class="t" id="soutt" type="time" value="${esc(x?.check_out_time || "")}"></div></div>
+      <label class="f" for="snote">Note <small>(optional)</small></label><input class="t" id="snote" value="${esc(x?.note || "")}" placeholder="Door code is in the host's message, site #14" maxlength="300">
+      <p class="hint" id="serr" role="alert" style="color:var(--err)"></p>
+      <button class="primary" type="submit">${x ? "Save" : "Add"}</button>
+      ${x ? `<button class="danger-btn" type="button" id="sdel">Remove</button>` : ""}</form>`);
+    $("#sf").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const row = { name: $("#sname").value.trim(), address: $("#saddr").value.trim(), check_in_date: $("#sind").value || null, check_in_time: $("#sint").value || "",
+        check_out_date: $("#soutd").value || null, check_out_time: $("#soutt").value || "", note: $("#snote").value.trim() };
+      if (row.check_in_date && row.check_out_date && row.check_out_date < row.check_in_date) { $("#serr").textContent = "Check-out is before check-in."; return; }
+      const b = e.submitter || $("#sf .primary"); busy(b, true, "Saving…");
+      try {
+        if (x) { must(await sb.from("trip_stays").update(row).eq("id", x.id)); Object.assign(x, row); }
+        else ST.stays.push(must(await sb.from("trip_stays").insert({ ...row, trip_id: trip.id, created_by: session.user.id }).select("*").single()));
+        ST.stays.sort((a, b2) => String(a.check_in_date || "9").localeCompare(String(b2.check_in_date || "9")));
+        store.set("stays." + trip.id, ST); closeSheet(); drawOverview(); toast("Saved");
+      } catch (err) { busy(b, false); $("#serr").textContent = err.message; }
+    });
+    $("#sdel")?.addEventListener("click", async () => {
+      if (!confirm(`Remove ${x.name}?`)) return;
+      try { must(await sb.from("trip_stays").delete().eq("id", x.id)); ST.stays = ST.stays.filter((y) => y.id !== x.id); store.set("stays." + trip.id, ST); closeSheet(); drawOverview(); }
+      catch (err) { fail(err); }
+    });
+  }
+
+  // Shrink a photo or screenshot to a JPEG data URL (max 1600px) before sending it to be read.
+  function shrinkImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = () => {
+        const k = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement("canvas");
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url); resolve(c.toDataURL("image/jpeg", 0.85));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Couldn't open that image.")); };
+      img.src = url;
+    });
+  }
+
+  // Paste a flight or booking confirmation (or a screenshot); Claude reads out flights and stays to review and add.
+  function importSheet() {
+    const trip = T.trip, me_ = session.user.id;
+    let image = null;
+    openSheet(`<h2>Paste a confirmation</h2>
+      <p class="hint" style="margin:4px 0 10px">Paste the text of a flight, hotel or rental confirmation email, or add a screenshot. Pack finds the flights and places to stay for you to check before adding.</p>
+      <form id="imf"><textarea class="t" id="imtext" placeholder="Paste your confirmation here…" style="min-height:140px"></textarea>
+      <label class="secondary im-file" for="imfile">📷 ${"Add a screenshot"}</label><input type="file" id="imfile" accept="image/*" hidden>
+      <div id="imprev"></div>
+      <p class="hint" style="margin:8px 2px 0;font-size:13px">Counts as one smart sort. Pack doesn't save what you paste, only the flights and stays you add.</p>
+      <p class="hint" id="imerr" role="alert" style="color:var(--err)"></p>
+      <button class="primary" type="submit" id="imgo">Find flights and stays</button></form>`);
+    $("#imfile").addEventListener("change", async (e) => {
+      const f = e.target.files?.[0]; if (!f) return;
+      try { image = await shrinkImage(f); $("#imprev").innerHTML = `<div class="im-prev"><img src="${image}" alt="Screenshot to read"><button type="button" class="linkbtn" id="imrm">Remove</button></div>`; $("#imrm").addEventListener("click", () => { image = null; $("#imprev").innerHTML = ""; $("#imfile").value = ""; }); }
+      catch (err) { $("#imerr").textContent = err.message; }
+    });
+    $("#imf").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = $("#imtext").value.trim();
+      if (!text && !image) { $("#imerr").textContent = "Paste a confirmation or add a screenshot."; return; }
+      busy($("#imgo"), true, "Reading…"); $("#imerr").textContent = "";
+      try {
+        const people = T.members.map((m) => { const p = profileOf(m.user_id); return String(p.display_name || p.email || "").split(/[\s@]/)[0]; }).filter(Boolean);
+        const r = await api("/api/trip-import", { text, image, trip: { destination: trip.destination, start: trip.start_date, end: trip.end_date }, people });
+        if (!r.flights.length && !r.stays.length) { busy($("#imgo"), false); $("#imerr").textContent = "Couldn't find any flights or stays in that. Try pasting the whole email, or a clearer screenshot."; return; }
+        reviewImport(r);
+      } catch (err) { busy($("#imgo"), false); $("#imerr").textContent = err.message; }
+    });
+  }
+  function reviewImport(r) {
+    const trip = T.trip, me_ = session.user.id, shared = T.members.length > 1;
+    const first = (u) => { const p = profileOf(u); return key(String(p.display_name || p.email || (u === me_ ? me?.display_name : "") || "").split(/[\s@]/)[0]); };
+    // Match passenger first names to people on the trip; default to me.
+    const whoFor = (f) => { const ps = (f.passengers || []).map((p) => key(p.split(/\s+/)[0])); const m = T.members.filter((x) => ps.includes(first(x.user_id))).map((x) => x.user_id); return m.length ? m : [me_]; };
+    const existing = new Set((FL?.flights || []).map((f) => `${f.flight_no.replace(/\s+/g, "")}|${f.flight_date}|${f.user_id}`));
+    const fl = r.flights.map((f) => ({ ...f, who: new Set(whoFor(f)) }));
+    openSheet(`<h2>Found ${[r.flights.length ? `${r.flights.length} flight${r.flights.length === 1 ? "" : "s"}` : "", r.stays.length ? `${r.stays.length} place${r.stays.length === 1 ? "" : "s"} to stay` : ""].filter(Boolean).join(" and ")}</h2>
+      <p class="hint" style="margin:4px 0 12px">Check these before adding. Tap to leave any out.</p>
+      ${fl.map((f, i) => `<div class="im-row"><label class="check-row" style="margin-top:0"><input type="checkbox" data-imf="${i}" checked><span class="grow"><strong>${esc(f.flight_no)}</strong> · ${esc(fmtDate(f.date, { weekday: "short", month: "short", day: "numeric" }))}<br><small class="muted">${esc([f.dep_airport, f.arr_airport].filter(Boolean).join(" → "))}${f.dep_time ? ` · ${esc(clock(f.dep_time))}${f.arr_time ? "–" + esc(clock(f.arr_time)) : ""}` : ""} · ${esc(DIR[f.direction] || "Other")}</small></span></label>
+        ${shared ? `<div class="chips im-who" data-imw="${i}">${T.members.map((m) => `<button type="button" class="chip${f.who.has(m.user_id) ? " on" : ""}" data-u="${m.user_id}">${esc(m.user_id === me_ ? "Me" : nameOf(m.user_id))}</button>`).join("")}</div>` : ""}</div>`).join("")}
+      ${r.stays.map((x, i) => `<label class="check-row"><input type="checkbox" data-ims="${i}" checked><span class="grow"><strong>🏡 ${esc(x.name)}</strong><br><small class="muted">${esc([x.address, x.check_in_date ? "In " + fmtDate(x.check_in_date) : "", x.check_out_date ? "out " + fmtDate(x.check_out_date) : ""].filter(Boolean).join(" · "))}</small></span></label>`).join("")}
+      <p class="hint" id="imerr2" role="alert" style="color:var(--err)"></p>
+      <button class="primary" type="button" id="imadd">Add to trip</button>`);
+    $$(".im-who").forEach((w) => w.addEventListener("click", (e) => { const b = e.target.closest("[data-u]"); if (!b) return; const set = fl[+w.dataset.imw].who; set.has(b.dataset.u) ? set.delete(b.dataset.u) : set.add(b.dataset.u); b.classList.toggle("on", set.has(b.dataset.u)); }));
+    $("#imadd").addEventListener("click", async (e) => {
+      const b = e.currentTarget; busy(b, true, "Adding…");
+      const rows = [];
+      fl.forEach((f, i) => { if (!$(`[data-imf="${i}"]`).checked) return; for (const u of f.who) { if (existing.has(`${f.flight_no.replace(/\s+/g, "")}|${f.date}|${u}`)) continue;
+        rows.push({ trip_id: trip.id, created_by: me_, user_id: u, direction: f.direction, flight_no: f.flight_no, flight_date: f.date, dep_airport: f.dep_airport, arr_airport: f.arr_airport, dep_time: f.dep_time, arr_time: f.arr_time }); } });
+      const stays = r.stays.filter((_, i) => $(`[data-ims="${i}"]`).checked).map((x) => ({ trip_id: trip.id, created_by: me_, name: x.name, address: x.address, check_in_date: x.check_in_date || null, check_in_time: x.check_in_time, check_out_date: x.check_out_date || null, check_out_time: x.check_out_time }));
+      try {
+        if (rows.length) FL.flights.push(...must(await sb.from("trip_flights").insert(rows).select("*")));
+        if (stays.length) ST.stays.push(...must(await sb.from("trip_stays").insert(stays).select("*")));
+        FL.flights.sort((a, c) => (a.flight_date + a.dep_time).localeCompare(c.flight_date + c.dep_time));
+        store.set("flights." + trip.id, FL); store.set("stays." + trip.id, ST);
+        if (FL.flights.length) await loadAirports();
+        closeSheet(); drawOverview();
+        toast(rows.length || stays.length ? `Added ${[rows.length ? `${rows.length} flight${rows.length === 1 ? "" : "s"}` : "", stays.length ? `${stays.length} stay${stays.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ")}` : "Those were already on the trip");
+      } catch (err) { busy(b, false); $("#imerr2").textContent = err.message; }
+    });
   }
 
   function flightSheet(f) {
@@ -1559,7 +1761,7 @@
         if (f) { must(await sb.from("trip_flights").update(row).eq("id", f.id)); saved = Object.assign(f, row); if (f.flight_no !== no) saved.status = null; }
         else { saved = must(await sb.from("trip_flights").insert({ ...row, trip_id: trip.id, created_by: me_ }).select("*").single()); FL.flights.push(saved); }
         FL.flights.sort((a, b2) => (a.flight_date + a.dep_time).localeCompare(b2.flight_date + b2.dep_time));
-        store.set("flights." + trip.id, FL); closeSheet(); drawOverview(); toast(f ? "Flight saved" : "Flight added");
+        store.set("flights." + trip.id, FL); closeSheet(); await loadAirports(); drawOverview(); toast(f ? "Flight saved" : "Flight added");
         if (cfg.flights) api("/api/flight-status", { id: saved.id }).then((r) => { if (r.status) { saved.status = r.status; Object.assign(saved, r.filled || {}); store.set("flights." + trip.id, FL); drawOverview(); } else if (r.notFound) toast("Couldn't find live info for that flight. Check the number and date."); }).catch(() => {});
       } catch (err) { busy(b, false); $("#ferr").textContent = err.message; }
     });

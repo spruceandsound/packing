@@ -22,7 +22,13 @@ export default async () => {
   let sent = 0, failed = 0;
   for (const row of due) {
     try {
-      await sendEmail({ to: row.email, ...buildReminder(row) });
+      // Their flights on the first day and where they're staying first, if anyone added them.
+      const get = (path) => fetch(`${env("SUPABASE_URL")}/rest/v1/${path}`, { headers }).then((x) => (x.ok ? x.json() : [])).catch(() => []);
+      const [flights, stays] = await Promise.all([
+        get(`trip_flights?trip_id=eq.${row.trip_id}&user_id=eq.${row.user_id}&flight_date=eq.${row.start_date}&select=flight_no,dep_airport,arr_airport,dep_time,arr_time&order=dep_time`),
+        get(`trip_stays?trip_id=eq.${row.trip_id}&select=name,address,check_in_date,check_in_time&order=check_in_date.asc.nullslast&limit=1`),
+      ]);
+      await sendEmail({ to: row.email, ...buildReminder({ ...row, flights, stays }) });
       await fetch(`${env("SUPABASE_URL")}/rest/v1/reminders_sent`, {
         method: "POST", headers: { ...headers, prefer: "resolution=ignore-duplicates" },
         body: JSON.stringify({ trip_id: row.trip_id, user_id: row.user_id, kind: "day_before" }),

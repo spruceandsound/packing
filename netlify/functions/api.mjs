@@ -4,6 +4,8 @@
 //   POST /api/weather  → { destination, start, end, units } → forecast or typical weather
 //   POST /api/sort     → signed-in only; counts against the daily limit; Claude sorts items
 //   POST /api/delete-account → signed-in only; { confirm: "DELETE" } permanently deletes the account
+//   POST /api/trip-import    → signed-in; { text | image, trip, people } → flights and stays read from a pasted
+//                              confirmation or screenshot (counts as one smart sort; nothing pasted is stored)
 //   POST /api/flight-status  → signed-in trip members; { id } → live status for a saved flight (needs AERODATABOX_KEY)
 //
 //   AERODATABOX_KEY        optional, RapidAPI key for AeroDataBox (live flight status). Without it, flights show
@@ -19,7 +21,7 @@
 import { buildReminder, sendEmail } from "../lib/reminder-email.mjs";
 
 export const config = {
-  path: ["/api/config", "/api/weather", "/api/sort", "/api/test-reminder", "/api/delete-account", "/api/flight-status"],
+  path: ["/api/config", "/api/weather", "/api/sort", "/api/test-reminder", "/api/delete-account", "/api/flight-status", "/api/trip-import"],
   rateLimit: { windowLimit: 30, windowSize: 60, aggregateBy: ["ip", "domain"] },
 };
 
@@ -144,6 +146,87 @@ async function currentUser(req) {
   if (!r.ok) return null;
   const u = await r.json().catch(() => null);
   return u?.id ? u : null;
+}
+
+// ───────────────────────── read a confirmation (flights + stays) ─────────────────────────
+
+const IMPORT_TOOL = {
+  name: "travel_details",
+  description: "Flights and places to stay found in a travel confirmation, itinerary or booking.",
+  input_schema: {
+    type: "object",
+    properties: {
+      flights: { type: "array", items: { type: "object", properties: {
+        flight_no: { type: "string", description: "Airline IATA code and number, e.g. 'AS 1234'. Marketing carrier as printed." },
+        date: { type: "string", description: "Departure date YYYY-MM-DD (local to the departure airport)." },
+        dep_airport: { type: "string", description: "3-letter IATA code of departure airport." },
+        arr_airport: { type: "string", description: "3-letter IATA code of arrival airport." },
+        dep_time: { type: "string", description: "Local departure time HH:MM, 24-hour. Empty if not shown." },
+        arr_time: { type: "string", description: "Local arrival time HH:MM, 24-hour. Empty if not shown." },
+        direction: { type: "string", enum: ["out", "back", "other"], description: "out = toward the trip destination, back = heading home, other = in between." },
+        passengers: { type: "array", items: { type: "string" }, description: "Passenger first names as printed (first names only)." },
+      }, required: ["flight_no", "date"] } },
+      stays: { type: "array", items: { type: "object", properties: {
+        name: { type: "string", description: "Hotel, rental or campsite name." },
+        address: { type: "string", description: "Street address as printed, or empty." },
+        check_in_date: { type: "string", description: "YYYY-MM-DD or empty." },
+        check_in_time: { type: "string", description: "HH:MM 24-hour or empty." },
+        check_out_date: { type: "string", description: "YYYY-MM-DD or empty." },
+        check_out_time: { type: "string", description: "HH:MM 24-hour or empty." },
+      }, required: ["name"] } },
+    },
+    required: ["flights", "stays"],
+  },
+};
+const ymd = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : "");
+const hm = (v) => { const m = String(v || "").match(/^(\d{1,2}):(\d{2})/); return m && +m[1] < 24 && +m[2] < 60 ? `${m[1].padStart(2, "0")}:${m[2]}` : ""; };
+const iataOk = (v) => (/^[A-Z]{3}$/.test(String(v || "").toUpperCase().trim()) ? String(v).toUpperCase().trim() : "");
+
+async function tripImport(req) {
+  if (!env("ANTHROPIC_API_KEY")) return json({ error: "The app isn't fully set up yet (Claude API key)." }, 503);
+  const user = await currentUser(req);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  const body = await req.json().catch(() => ({}));
+  const text = clip(body.text, 20000);
+  const img = typeof body.image === "string" ? body.image.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/) : null;
+  if (!text && !img) return json({ error: "Paste a confirmation or add a screenshot." }, 400);
+  if (img && img[2].length > 5_000_000) return json({ error: "That image is too large. Try a smaller screenshot." }, 413);
+  const used = await useSort(user.id);
+  const limit = Number(env("PACK_DAILY_LIMIT", "50")) || 50;
+  if (used == null) return json({ error: `You've used all ${limit} smart sorts for today. They reset at midnight.` }, 429);
+
+  const t = body.trip || {};
+  const people = (Array.isArray(body.people) ? body.people : []).map((x) => clip(x, 40)).filter(Boolean).slice(0, 20);
+  const intro = [
+    "Read this travel confirmation and pull out every flight segment and every place to stay.",
+    "Only include what's actually in it. Use the airport's local times as printed. Ignore prices, seat maps, ads and fine print.",
+    "Don't include confirmation codes, ticket numbers, loyalty numbers, payment details or anything else personal beyond passenger first names.",
+    t.destination ? `The trip is to ${clip(t.destination, 160)}${t.start ? `, ${clip(t.start, 10)} to ${clip(t.end || t.start, 10)}` : ""}. Use that to decide out vs back.` : "",
+    t.start ? `If a date has no year, assume the year that fits ${clip(t.start, 10)}.` : `Today is ${iso(new Date())}; if a date has no year, assume the next one.`,
+    people.length ? `People on the trip: ${people.join(", ")}.` : "",
+  ].filter(Boolean).join("\n");
+  const content = img
+    ? [{ type: "image", source: { type: "base64", media_type: img[1], data: img[2] } }, { type: "text", text: intro + (text ? "\n\nAlso pasted:\n" + text : "") }]
+    : [{ type: "text", text: intro + "\n\nConfirmation:\n" + text }];
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": env("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify({ model: env("PACK_MODEL", "claude-haiku-5-5"), max_tokens: 2000, tools: [IMPORT_TOOL], tool_choice: { type: "tool", name: "travel_details" }, messages: [{ role: "user", content }] }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { console.error("Claude API error (import)", r.status, d?.error?.message); return json({ error: "Couldn't read that right now. Try again in a minute." }, 502); }
+  const out = (d.content || []).find((b) => b.type === "tool_use")?.input || {};
+  const flights = (out.flights || []).slice(0, 20).map((f) => ({
+    flight_no: clip(String(f.flight_no || "").toUpperCase().replace(/\s+/g, " ").replace(/^([A-Z0-9]{2})(\d)/, "$1 $2"), 12),
+    date: ymd(f.date), dep_airport: iataOk(f.dep_airport), arr_airport: iataOk(f.arr_airport), dep_time: hm(f.dep_time), arr_time: hm(f.arr_time),
+    direction: ["out", "back", "other"].includes(f.direction) ? f.direction : "other",
+    passengers: (Array.isArray(f.passengers) ? f.passengers : []).map((x) => clip(x, 40)).filter(Boolean).slice(0, 12),
+  })).filter((f) => /^[A-Z0-9]{2,3} ?\d{1,5}[A-Z]?$/.test(f.flight_no) && f.date);
+  const stays = (out.stays || []).slice(0, 10).map((x) => ({
+    name: clip(x.name, 120), address: clip(x.address, 300), check_in_date: ymd(x.check_in_date), check_in_time: hm(x.check_in_time),
+    check_out_date: ymd(x.check_out_date), check_out_time: hm(x.check_out_time),
+  })).filter((x) => x.name);
+  return json({ flights, stays, remaining: Math.max(0, limit - used) });
 }
 
 // ───────────────────────── flights (AeroDataBox via RapidAPI) ─────────────────────────
@@ -367,6 +450,10 @@ async function testReminder(req) {
     mine_left: items.filter((i) => !i.packed && i.assigned_to === user.id).length,
     pack_last: t ? items.filter((i) => i.pack_last && !i.packed).map((i) => i.name).slice(0, 12) : ["Phone charger", "Toothbrush"],
   };
+  if (t?.id) {
+    const [fl, st] = await Promise.all([asUser(`trip_flights?trip_id=eq.${t.id}&user_id=eq.${user.id}&select=flight_no,dep_airport,arr_airport,dep_time,arr_time,flight_date&order=flight_date,dep_time&limit=2`), asUser(`trip_stays?trip_id=eq.${t.id}&select=name,address,check_in_time&order=check_in_date.asc.nullslast&limit=1`)]);
+    r.flights = Array.isArray(fl) ? fl : []; r.stays = Array.isArray(st) ? st : [];
+  }
   const mail = buildReminder(r);
   try { await sendEmail({ to: user.email, ...mail, subject: "[Test] " + mail.subject }); }
   catch (e) { return json({ error: "Couldn't send: " + e.message }, 502); }
@@ -391,6 +478,7 @@ export default async (req) => {
     if (path === "/api/sort") return await sort(req);
     if (path === "/api/delete-account" && req.method === "POST") return await deleteAccount(req);
     if (path === "/api/flight-status") return await flightStatus(req);
+    if (path === "/api/trip-import") return await tripImport(req);
     if (path === "/api/test-reminder") return await testReminder(req);
     return json({ error: "Not found" }, 404);
   } catch (err) {

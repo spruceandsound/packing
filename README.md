@@ -54,7 +54,12 @@ venmo.com; computers open venmo.com. Coming back to Pack offers to mark the shar
 
 Opening a trip shows an overview (`#/trip/:id`): countdown, packing and expenses tiles, weather, flights,
 people and notes. The packing list is `#/trip/:id/pack`, expenses `#/trip/:id/expenses`.
-Flights live in `trip_flights` (`supabase/12-trip-flights.sql`). For live status, gates and delays, set
+Flights live in `trip_flights` (`supabase/12-trip-flights.sql`), stays in `trip_stays` (`supabase/13-trip-stays.sql`).
+"Paste a confirmation" sends pasted text or a screenshot to `/api/trip-import` (Claude reads out flights and stays;
+counts as one smart sort; nothing pasted is stored). Airport names and time zones come from `data/airports.json`
+(built from github.com/mwgg/Airports, MIT license in `data/airports-LICENSE.txt`), used for city names, flight
+length, local arrival times, countdowns and "who lands when". Day-before reminders include the person's flights
+and the first stay. For live status, gates and delays, set
 `AERODATABOX_KEY` (a RapidAPI key subscribed to AeroDataBox) in Netlify; `/api/flight-status` caches results
 for 10 minutes near travel day. Without the key, flights show what people entered plus a FlightAware link.
 
