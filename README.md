@@ -63,6 +63,20 @@ and the first stay. For live status, gates and delays, set
 `AERODATABOX_KEY` (a RapidAPI key subscribed to AeroDataBox) in Netlify; `/api/flight-status` caches results
 for 10 minutes near travel day. Without the key, flights show what people entered plus a FlightAware link.
 
+## Viewers, calendar and rental cars
+
+Trips have two kinds of invite (`supabase/14-trip-viewers.sql`): **Traveler** (packs, splits costs, edits, as before) and
+**Viewer** (`trip_members.role = 'viewer'`). Viewers see the overview and calendar: dates, weather, notes, flights, stays,
+rental cars and who's going. Row-level security keeps packing lists and expenses from them entirely, and only travelers
+(`is_trip_editor`) can change anything or create invite links. Viewers get no day-before packing reminder. A viewer who opens a
+Traveler link becomes a traveler. The join screen says which kind of invite it is (`invite_preview`).
+
+The Calendar tab (`#/trip/:id/calendar`) lays the trip out Sunday–Saturday with trip days shaded, then lists each day's
+flights (out, home, and landings the next day), check-ins and check-outs, and rental car pickups and drop-offs.
+Rental cars live in `trip_cars` (`supabase/15-trip-cars.sql`) and are added on the overview.
+
+Hourly weather starts collapsed; the "Next 48 hours" button animates it open.
+
 ## Policies and account controls
 
 - `/privacy` (privacy.html) and `/terms` (terms.html), styled by legal.css; linked from the landing footer,

@@ -251,6 +251,7 @@
       if (view === "trip" && id && sub === "edit") return await renderTripForm(id);
       if (view === "trip" && id && sub === "expenses") return await renderExpenses(id);
       if (view === "trip" && id && sub === "pack") return await renderTrip(id);
+      if (view === "trip" && id && sub === "calendar") return await renderCalendar(id);
       if (view === "trip" && id) return await renderOverview(id);
       if (view === "new") return await renderTripForm(null, id);
       if (view === "inventory" || view === "closet") return await renderCloset();
@@ -495,10 +496,16 @@
 
   async function acceptInvite(token) {
     store.set(pendingJoinKey, null);
+    let pv = null;
+    try { pv = (await sb.rpc("invite_preview", { p_token: token }))?.data?.[0] || null; } catch {}
+    const asViewer = pv?.role === "viewer";
+    const tripName = pv?.trip_name ? `“${esc(pv.trip_name)}”` : "a trip";
     const ok = await new Promise((resolve) => {
       app.innerHTML = `${themeBtn("auth-theme")}<section class="auth"><div class="inner"><img src="/apple-touch-icon.png" alt="">
-        <h1>Join a shared trip?</h1><p>Someone invited you to pack together. Joining shows them your name and email, and you'll see theirs.</p>
-        <button class="go" id="yes">Join trip</button><button class="link" id="no">Not now</button></div></section>`;
+        ${asViewer
+          ? `<h1>Follow along?</h1><p>You've been invited to view ${tripName}: dates, flights, where they're staying and the weather. Packing lists and expenses stay private. Joining shows them your name and email.</p>`
+          : `<h1>Join a shared trip?</h1><p>Someone invited you to pack together${pv ? ` for ${tripName}` : ""}. Joining shows them your name and email, and you'll see theirs.</p>`}
+        <button class="go" id="yes">${asViewer ? "View trip" : "Join trip"}</button><button class="link" id="no">Not now</button></div></section>`;
       $("#yes").addEventListener("click", () => resolve(true));
       $("#no").addEventListener("click", () => resolve(false));
     });
@@ -506,7 +513,7 @@
     app.innerHTML = `<div class="boot"><img src="/apple-touch-icon.png" alt=""><span class="spin"></span></div>`;
     const { data, error } = await sb.rpc("accept_invite", { p_token: token });
     if (error) { toast(error.message, 4500); return go("#/"); }
-    toast("You've joined the trip");
+    toast(asViewer ? "You're following along" : "You've joined the trip");
     go("#/trip/" + data);
   }
 
@@ -519,8 +526,13 @@
   }
   function tripCard(t) {
     const items = t.items || [], p = items.filter((i) => i.packed).length, n = items.length;
-    const shared = (t.trip_members || []).length > 1;
+    const meRow = (t.trip_members || []).find((m) => m.user_id === session.user.id);
+    const viewing = meRow?.role === "viewer";
+    const shared = (t.trip_members || []).filter((m) => m.role !== "viewer").length > 1;
     const bits = [dateRange(t.start_date, t.end_date), t.destination].filter(Boolean).map(esc).join(" · ");
+    if (viewing) return `<a class="trip-card" href="#/trip/${t.id}"><div class="ov-ic" aria-hidden="true">👀</div><div class="grow">
+      <div class="t">${esc(t.name)}<span class="badge">Viewing</span></div>
+      <div class="m">${bits || "Flights, stays and weather"}</div></div></a>`;
     return `<a class="trip-card" href="#/trip/${t.id}">${ring(p, n)}<div class="grow">
       <div class="t">${esc(t.name)}${shared ? '<span class="badge">Shared</span>' : ""}</div>
       <div class="m">${n ? (p === n ? "All packed" : `${p} of ${n} packed`) : "No items yet"}${bits ? " · " + bits : ""}</div></div></a>`;
@@ -538,7 +550,7 @@
     };
     const cached = store.get("trips", null);
     if (cached) draw(cached);
-    const trips = must(await sb.from("trips").select("id,name,destination,start_date,end_date,updated_at,items(packed),trip_members(user_id)")
+    const trips = must(await sb.from("trips").select("id,name,destination,start_date,end_date,updated_at,items(packed),trip_members(user_id,role)")
       .order("start_date", { ascending: true, nullsFirst: false }).order("updated_at", { ascending: false }));
     store.set("trips", trips);
     if (location.hash.replace(/^#\/?/, "") === "") draw(trips);
@@ -549,8 +561,11 @@
     const editing = !!tripId;
     let trip = { name: "", destination: "", start_date: "", end_date: "", details: "", bags: [] };
     let tpls = [], always = [], equipment = [], tpl = null;
-    if (editing) trip = must(await sb.from("trips").select("*").eq("id", tripId).single());
-    else {
+    if (editing) {
+      trip = must(await sb.from("trips").select("*").eq("id", tripId).single());
+      const mine = must(await sb.from("trip_members").select("role").eq("trip_id", tripId).eq("user_id", session.user.id).maybeSingle());
+      if (mine?.role === "viewer") return go(`#/trip/${tripId}`);
+    } else {
       [tpls, always] = await Promise.all([
         sb.from("templates").select("id,name,bags,items").order("created_at", { ascending: false }).then(must),
         sb.from("closet_items").select("name,qty,category,always,purpose").then(must),
@@ -745,14 +760,21 @@
     if (!trip) return null;
     const ids = members.map((m) => m.user_id);
     const profiles = ids.length ? must(await sb.from("profiles").select("id,email,display_name,venmo").in("id", ids)) : [];
-    return applyPending({ trip, items, members, profiles, inventory: inv.map((i) => key(i.name)), always: inv.filter((i) => i.always).map((i) => key(i.name)) });
+    // Viewers follow along (flights, stays, weather) but aren't travelers: they're kept out of
+    // T.members so packing, assignments, expenses and "who's flying" only ever involve travelers.
+    const myRole = members.find((m) => m.user_id === session.user.id)?.role || "editor";
+    return applyPending({ trip, items: myRole === "viewer" ? [] : items, members: members.filter((m) => m.role !== "viewer"),
+      viewers: members.filter((m) => m.role === "viewer"), myRole, profiles,
+      inventory: inv.map((i) => key(i.name)), always: inv.filter((i) => i.always).map((i) => key(i.name)) });
   }
 
   async function renderTrip(id) {
     const cached = store.get("trip." + id, null);
+    if (cached?.myRole === "viewer") return go(`#/trip/${id}`);
     if (cached) { T = cached; drawTrip(); }
     const fresh = await fetchTrip(id);
     if (!fresh) { store.set("trip." + id, null); toast("That trip isn't available."); return go("#/"); }
+    if (fresh.myRole === "viewer") { T = fresh; cacheTrip(); return go(`#/trip/${id}`); }
     T = fresh; cacheTrip(); drawTrip();
 
     const wx0 = T.trip.weather, t0 = today();
@@ -793,16 +815,17 @@
     let row = list.find((x) => x.id === T.trip.id);
     if (!row) { row = { id: T.trip.id }; list.push(row); }
     Object.assign(row, { name: T.trip.name, destination: T.trip.destination, start_date: T.trip.start_date, end_date: T.trip.end_date, updated_at: T.trip.updated_at,
-      items: T.items.map((i) => ({ packed: i.packed, name: i.name, kind: i.kind })), trip_members: T.members.map((m) => ({ user_id: m.user_id })) });
+      items: T.items.map((i) => ({ packed: i.packed, name: i.name, kind: i.kind })), trip_members: [...T.members, ...(T.viewers || [])].map((m) => ({ user_id: m.user_id, role: m.role })) });
     store.set("trips", list);
   }
   const profileOf = (uid) => T.profiles.find((p) => p.id === uid) || { id: uid, display_name: "Someone" };
+  const firstNameOf = (uid) => { if (!uid) return "The organizer"; const pr = profileOf(uid); return String(pr.display_name || pr.email || "Someone").split(/[\s@]/)[0]; };
 
   // ───────────── weather card: days, hour by hour, wind map ─────────────
   const WXN = (c, day) => (!day && c != null && c <= 2 ? (c <= 1 ? "🌙" : "☁️") : WX(c));
   const hourLabel = (t) => { const h = Number(t.slice(11, 13)); return h === 0 ? "12a" : h < 12 ? h + "a" : h === 12 ? "12p" : (h - 12) + "p"; };
   const clock = (hm) => { if (!hm) return ""; const [h, m] = hm.split(":").map(Number); return `${h % 12 || 12}:${String(m).padStart(2, "0")}${h < 12 ? "am" : "pm"}`; };
-  let wxOpen = { hours: true };
+  let wxOpen = { hours: false };
   // Drop hours and days that have already passed at the destination (forecasts are saved, and time moves on).
   function wxNow(wx) {
     const nowH = typeof wx.offset === "number" ? new Date(Date.now() + wx.offset * 1000).toISOString().slice(0, 13)
@@ -811,6 +834,16 @@
     const fore = wx.kind !== "typical" && Array.isArray(wx.days);
     const left = fore ? wx.days.filter((d) => String(d.date).slice(0, 10) >= nowH.slice(0, 10)) : wx.days || [];
     return { nowH, hours, days: left.length ? left : wx.days || [] };
+  }
+  // Opens and closes the hour-by-hour strip in place so it can animate (CSS does the motion).
+  function toggleWx(b) {
+    const open = !wxOpen[b.dataset.wx]; wxOpen[b.dataset.wx] = open;
+    const box = document.getElementById(b.getAttribute("aria-controls"));
+    b.setAttribute("aria-expanded", open); $(".wx-hint", b).textContent = open ? "Hide" : "Show";
+    if (!box) return;
+    box.classList.toggle("open", open);
+    $(".wx-more-in", box).toggleAttribute("inert", !open);
+    if (open) setTimeout(() => { const r = box.getBoundingClientRect(); if (r.bottom > innerHeight) box.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest" }); }, 360);
   }
   function weatherCard(trip) {
     const wx0 = trip.weather;
@@ -828,9 +861,10 @@
         <div class="i">${WX(Number(d.code))}</div><div class="h">${esc(Number(d.hi))}°</div><div class="l">${esc(Number(d.lo))}°</div>
         <div class="p">${wx.kind === "typical" ? (Number(d.rain) > (wx.units === "c" ? 1 : 0.04) ? "rain" : "") : Number(d.rain) >= 20 ? esc(Number(d.rain)) + "%" : ""}</div></div>`).join("")}</div>
       <div class="wx-sum">${esc(wx.summary)}</div>
-      ${hours.length ? `<button class="wx-toggle" data-wx="hours" aria-expanded="${wxOpen.hours}">${wxOpen.hours ? "▾" : "▸"} ${startsToday ? `Next ${hours.length >= 48 ? 48 : hours.length} hours` : "Hour by hour, first two days"}</button>
-        ${d0?.sunrise && wxOpen.hours ? `<div class="wx-sun">Sunrise ${esc(clock(d0.sunrise))} · Sunset ${esc(clock(d0.sunset))}${d0.wind ? ` · Gusts to ${esc(Number(d0.wind))} ${windUnit}` : ""}</div>` : ""}
-        ${wxOpen.hours ? `<div class="wx-hours" role="list">${hours.map((h, i) => `${i && h.t.slice(11, 13) === "00" ? `<div class="wx-sep" role="presentation"><span>${esc(fmtDate(h.t.slice(0, 10), { weekday: "short" }))}</span></div>` : ""}<div class="wx-hour${h.day ? "" : " night"}" role="listitem">
+      ${hours.length ? `<button class="wx-toggle" type="button" data-wx="hours" aria-expanded="${wxOpen.hours}" aria-controls="wxMore"><span class="wx-chev" aria-hidden="true">▸</span><span class="grow">${startsToday ? `Next ${hours.length >= 48 ? 48 : hours.length} hours` : "Hour by hour, first two days"}</span><span class="wx-hint">${wxOpen.hours ? "Hide" : "Show"}</span></button>
+        <div class="wx-more${wxOpen.hours ? " open" : ""}" id="wxMore"><div class="wx-more-in"${wxOpen.hours ? "" : " inert"}>
+        ${d0?.sunrise ? `<div class="wx-sun">Sunrise ${esc(clock(d0.sunrise))} · Sunset ${esc(clock(d0.sunset))}${d0.wind ? ` · Gusts to ${esc(Number(d0.wind))} ${windUnit}` : ""}</div>` : ""}
+        <div class="wx-hours" role="list">${hours.map((h, i) => `${i && h.t.slice(11, 13) === "00" ? `<div class="wx-sep" role="presentation"><span>${esc(fmtDate(h.t.slice(0, 10), { weekday: "short" }))}</span></div>` : ""}<div class="wx-hour${h.day ? "" : " night"}" role="listitem">
             <div class="t">${i === 0 && startsToday ? "Now" : hourLabel(h.t)}</div>
             <div class="i">${WXN(Number(h.code), h.day)}</div>
             <div class="h">${esc(Number(h.temp))}°</div>
@@ -838,16 +872,19 @@
             <div class="p">${Number(h.rain) >= 10 ? esc(Number(h.rain)) + "%" : ""}</div>
             <div class="w" title="Wind ${esc(Number(h.wind))} ${windUnit}"><span class="arr" style="transform:rotate(${(Number(h.dir) + 180) % 360}deg)">↑</span>${esc(Number(h.wind))}</div>
           </div>`).join("")}</div>
-          <div class="wx-legend">Rain chance in blue · wind in ${windUnit}, arrow shows where it's blowing</div>` : ""}` : ""}
+          <div class="wx-legend">Rain chance in blue · wind in ${windUnit}, arrow shows where it's blowing</div>
+        </div></div>` : ""}
     </section>`;
   }
 
   function tripTabs(on) {
     const id = T.trip.id;
+    const viewer = T.myRole === "viewer";
     return `<nav class="triptabs" aria-label="Trip sections">
       <a href="#/trip/${id}" class="${on === "overview" ? "on" : ""}">Overview</a>
-      <a href="#/trip/${id}/pack" class="${on === "packing" ? "on" : ""}">Packing</a>
-      <a href="#/trip/${id}/expenses" class="${on === "expenses" ? "on" : ""}">Expenses</a></nav>`;
+      ${viewer ? "" : `<a href="#/trip/${id}/pack" class="${on === "packing" ? "on" : ""}">Packing</a>`}
+      <a href="#/trip/${id}/calendar" class="${on === "calendar" ? "on" : ""}">Calendar</a>
+      ${viewer ? "" : `<a href="#/trip/${id}/expenses" class="${on === "expenses" ? "on" : ""}">Expenses</a>`}</nav>`;
   }
 
   function drawTrip() {
@@ -1276,31 +1313,61 @@
     $("#toCloset")?.addEventListener("click", async () => { closeSheet(); await addToInventory([it]); });
   }
 
+  // Two kinds of invite: travelers pack, split costs and edit; viewers only see flights, stays and weather.
   async function shareTrip() {
     const isOwner = T.trip.owner_id === session.user.id;
-    openSheet(`<h2>Pack together</h2><p class="muted" style="margin:4px 0 14px">Anyone with this link can join after signing in. It works for 14 days.</p>
-      <div id="link"><button class="primary" id="mk" style="margin-top:0">Create invite link</button></div>
+    const everyone = [...T.members, ...(T.viewers || [])];
+    const roleNote = (m, pr) => m.role === "owner" ? "Organizer" : m.role === "viewer" ? "Viewer · sees flights, stays & weather" : esc(pr.email || "Traveler");
+    openSheet(`<h2>Invite people</h2><p class="muted" style="margin:4px 0 12px">Anyone with the link can join after signing in. Links work for 14 days.</p>
+      <div class="role-pick" role="radiogroup" aria-label="Invite as">
+        <label class="role-opt"><input type="radio" name="invRole" value="editor" checked><span><strong>Traveler</strong><span class="muted">Packs with you, splits costs, adds flights and stays</span></span></label>
+        <label class="role-opt"><input type="radio" name="invRole" value="viewer"><span><strong>Viewer</strong><span class="muted">Sees dates, flights, stays and weather. No packing lists or expenses, can't change anything.</span></span></label>
+      </div>
+      <div id="link"><button class="primary" id="mk" style="margin-top:12px">Create invite link</button></div>
       <h3 class="sec">On this trip</h3>
-      <div class="card">${T.members.map((m) => { const pr = profileOf(m.user_id); return `<div class="row">${avatar(pr)}<span class="nm">${esc(pr.display_name || pr.email)}${m.user_id === session.user.id ? " (you)" : ""}<span class="note">${m.role === "owner" ? "Owner" : esc(pr.email || "")}</span></span>
-        ${isOwner && m.user_id !== session.user.id ? `<button class="del" data-rm="${m.user_id}">Remove</button>` : ""}</div>`; }).join("")}</div>`);
-    $("#mk").addEventListener("click", async () => {
+      <div class="card">${everyone.map((m) => { const pr = profileOf(m.user_id); return `<div class="row">${avatar(pr)}<span class="nm">${esc(pr.display_name || pr.email)}${m.user_id === session.user.id ? " (you)" : ""}<span class="note">${roleNote(m, pr)}</span></span>
+        ${isOwner && m.user_id !== session.user.id ? `<button class="del" data-rm="${m.user_id}">Remove</button>` : ""}</div>`; }).join("")}</div>
+      ${(T.viewers || []).length ? `<p class="hint" style="margin:8px 0 0">To make a viewer a traveler, send them a Traveler link.</p>` : ""}`);
+    const roleNow = () => $('input[name="invRole"]:checked', sheetBody)?.value || "editor";
+    $$('input[name="invRole"]', sheetBody).forEach((r) => r.addEventListener("change", () => {
+      $("#link").innerHTML = `<button class="primary" id="mk" style="margin-top:12px">Create ${roleNow() === "viewer" ? "viewer" : "invite"} link</button>`; wireMk();
+    }));
+    const wireMk = () => $("#mk").addEventListener("click", async () => {
       const btn = $("#mk"); busy(btn, true, "Creating…");
+      const role = roleNow();
       try {
-        const inv = must(await sb.from("trip_invites").insert({ trip_id: T.trip.id, created_by: session.user.id }).select("token").single());
+        const inv = must(await sb.from("trip_invites").insert({ trip_id: T.trip.id, created_by: session.user.id, role }).select("token").single());
         const url = `${location.origin}/#/join/${inv.token}`;
+        const text = role === "viewer" ? `Follow along with ${T.trip.name}: flights, where we're staying and the weather` : `Help me pack for ${T.trip.name}`;
         if (navigator.share) {
-          try { await navigator.share({ title: `Pack: ${T.trip.name}`, text: `Help me pack for ${T.trip.name}`, url }); closeSheet(); return; } catch {}
+          try { await navigator.share({ title: `Pack: ${T.trip.name}`, text, url }); closeSheet(); return; } catch {}
         }
-        $("#link").innerHTML = `<div class="copy-box"><input class="t" readonly value="${esc(url)}" aria-label="Invite link"><button class="pill" id="cp">Copy</button></div>`;
+        $("#link").innerHTML = `<div class="copy-box" style="margin-top:12px"><input class="t" readonly value="${esc(url)}" aria-label="${role === "viewer" ? "Viewer" : "Invite"} link"><button class="pill" id="cp">Copy</button></div>`;
         $("#cp").addEventListener("click", async () => { try { await navigator.clipboard.writeText(url); toast("Link copied"); } catch { $(".copy-box input").select(); } });
       } catch (e) { busy(btn, false); fail(e); }
     });
+    wireMk();
     $$("[data-rm]", sheetBody).forEach((b) => b.addEventListener("click", async () => {
       if (!confirm("Remove this person from the trip?")) return;
       const { error } = await sb.from("trip_members").delete().eq("trip_id", T.trip.id).eq("user_id", b.dataset.rm);
       if (error) return fail(error);
-      T.members = T.members.filter((m) => m.user_id !== b.dataset.rm); closeSheet(); redrawTrip(); toast("Removed");
+      T.members = T.members.filter((m) => m.user_id !== b.dataset.rm); T.viewers = (T.viewers || []).filter((m) => m.user_id !== b.dataset.rm);
+      closeSheet(); redrawTrip(); toast("Removed");
     }));
+  }
+
+  function viewerMenu() {
+    openSheet(`<div class="menu">
+      <button data-a="leave" class="danger">Stop viewing this trip</button>
+      <button data-a="close" style="font-weight:650">Cancel</button></div>`, async (e) => {
+      const a = e.target.closest("[data-a]")?.dataset.a; if (!a) return;
+      closeSheet();
+      const id = T.trip.id;
+      if (a === "leave" && confirm(`Stop viewing “${T.trip.name}”?`)) {
+        try { must(await sb.from("trip_members").delete().eq("trip_id", id).eq("user_id", session.user.id)); store.set("trip." + id, null); go("#/"); }
+        catch (err) { fail(err); }
+      }
+    });
   }
 
   function tripMenu(isOwner) {
@@ -1357,6 +1424,12 @@
     if (error) { if (/trip_stays|schema cache|does not exist/i.test(error.message)) return { tripId: id, stays: [], unavailable: true }; throw new Error(error.message); }
     return { tripId: id, stays: data || [] };
   }
+  let CR = null; // { tripId, cars: [...] }
+  async function fetchCars(id) {
+    const { data, error } = await sb.from("trip_cars").select("*").eq("trip_id", id).order("pickup_date", { nullsFirst: false }).order("created_at");
+    if (error) { if (/trip_cars|schema cache|does not exist/i.test(error.message)) return { tripId: id, cars: [], unavailable: true }; throw new Error(error.message); }
+    return { tripId: id, cars: data || [] };
+  }
   async function fetchFlights(id) {
     const { data, error } = await sb.from("trip_flights").select("*").eq("trip_id", id).order("flight_date").order("dep_time");
     if (error) { if (/trip_flights|schema cache|does not exist/i.test(error.message)) return { tripId: id, flights: [], unavailable: true }; throw new Error(error.message); }
@@ -1364,7 +1437,7 @@
   }
   const redrawTrip = () => {
     const h = location.hash;
-    if (h.endsWith("/pack")) drawTrip(); else if (h.endsWith("/expenses")) { if (EX) drawExpenses(); } else if (T && h === `#/trip/${T.trip.id}`) drawOverview();
+    if (h.endsWith("/pack")) drawTrip(); else if (h.endsWith("/expenses")) { if (EX) drawExpenses(); } else if (h.endsWith("/calendar")) drawCalendar(); else if (T && h === `#/trip/${T.trip.id}`) drawOverview();
   };
   // Where the trip stands today: countdown, day x of y, or over.
   function tripStatus(trip) {
@@ -1483,12 +1556,12 @@
 
   async function renderOverview(id) {
     if (!T || T.trip.id !== id) T = store.get("trip." + id, null);
-    EX = store.get("exp." + id, null); FL = store.get("flights." + id, null); ST = store.get("stays." + id, null);
+    EX = store.get("exp." + id, null); FL = store.get("flights." + id, null); ST = store.get("stays." + id, null); CR = store.get("cars." + id, null);
     if (FL?.flights?.length) loadAirports().then(() => { if (location.hash === `#/trip/${id}`) drawOverview(); });
     if (T) drawOverview(); else app.innerHTML = header({ title: "Trip", back: "#/" }) + `<main><p class="hint"><span class="spin"></span><span>Loading…</span></p></main>`;
-    const [fresh, ex, fl, sty] = await Promise.all([fetchTrip(id), fetchExpenses(id).catch(() => EX), fetchFlights(id).catch(() => FL), fetchStays(id).catch(() => ST)]);
+    const [fresh, ex, fl, sty, crs] = await Promise.all([fetchTrip(id), fetchExpenses(id).catch(() => EX), fetchFlights(id).catch(() => FL), fetchStays(id).catch(() => ST), fetchCars(id).catch(() => CR)]);
     if (!fresh) { store.set("trip." + id, null); toast("That trip isn't available."); return go("#/"); }
-    T = fresh; cacheTrip(); if (ex) { EX = ex; cacheEx(); } if (fl) { FL = fl; store.set("flights." + id, FL); } if (sty) { ST = sty; store.set("stays." + id, ST); }
+    T = fresh; cacheTrip(); if (ex) { EX = ex; cacheEx(); } if (fl) { FL = fl; store.set("flights." + id, FL); } if (sty) { ST = sty; store.set("stays." + id, ST); } if (crs) { CR = crs; store.set("cars." + id, CR); }
     if (location.hash !== `#/trip/${id}`) return;
     drawOverview();
     if (FL?.flights?.length && !AIRPORTS) loadAirports().then(() => { if (location.hash === `#/trip/${id}`) drawOverview(); });
@@ -1509,11 +1582,12 @@
       .on("postgres_changes", { event: "*", schema: "public", table: "expenses", filter: `trip_id=eq.${id}` }, again)
       .on("postgres_changes", { event: "*", schema: "public", table: "trip_flights", filter: `trip_id=eq.${id}` }, again)
       .on("postgres_changes", { event: "*", schema: "public", table: "trip_stays", filter: `trip_id=eq.${id}` }, again)
+      .on("postgres_changes", { event: "*", schema: "public", table: "trip_cars", filter: `trip_id=eq.${id}` }, again)
       .subscribe();
     async function refresh() {
       if (location.hash !== `#/trip/${id}`) return;
-      const [f, e2, fl2, st2] = await Promise.all([fetchTrip(id).catch(() => null), fetchExpenses(id).catch(() => null), fetchFlights(id).catch(() => null), fetchStays(id).catch(() => null)]);
-      if (f) { T = f; cacheTrip(); } if (e2) { EX = e2; cacheEx(); } if (fl2) { FL = fl2; store.set("flights." + id, FL); if (FL.flights.length) loadAirports(); } if (st2) { ST = st2; store.set("stays." + id, ST); }
+      const [f, e2, fl2, st2, cr2] = await Promise.all([fetchTrip(id).catch(() => null), fetchExpenses(id).catch(() => null), fetchFlights(id).catch(() => null), fetchStays(id).catch(() => null), fetchCars(id).catch(() => null)]);
+      if (f) { T = f; cacheTrip(); } if (e2) { EX = e2; cacheEx(); } if (fl2) { FL = fl2; store.set("flights." + id, FL); if (FL.flights.length) loadAirports(); } if (st2) { ST = st2; store.set("stays." + id, ST); } if (cr2) { CR = cr2; store.set("cars." + id, CR); }
       drawOverview();
     }
   }
@@ -1534,6 +1608,8 @@
 
   function drawOverview() {
     const { trip, items: all } = T, me_ = session.user.id, cur = trip.currency || "USD";
+    const viewer = T.myRole === "viewer";
+    const viewers = T.viewers || [];
     const shared = T.members.length > 1;
     const st = tripStatus(trip);
     const mine = all.filter((i) => i.personal_of === me_ || (!shared && !i.personal_of) || (!i.personal_of && i.assigned_to === me_));
@@ -1548,16 +1624,18 @@
     const flights = FL?.tripId === trip.id ? FL.flights : [];
     const byDir = ["out", "back", "other"].map((d) => [d, flights.filter((f) => f.direction === d)]).filter(([, l]) => l.length);
     const stays = ST?.tripId === trip.id ? ST.stays : [];
+    const cars = CR?.tripId === trip.id ? CR.cars : [];
     const scrollY = window.scrollY;
 
     app.innerHTML = header({ title: trip.name, back: "#/", more: true, sub: [dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · ") }) + `<main class="ov">
       ${tripTabs("overview")}
       <section class="card ov-hero ${st.tone}">
         <div><div class="ov-big">${esc(st.big)}</div><div class="ov-small">${esc(st.small)}</div></div>
-        ${!trip.start_date ? `<a class="pill" href="#/trip/${trip.id}/edit">Add dates</a>` : trip.destination ? `<span class="ov-place">📍 ${esc(trip.destination)}</span>` : ""}
+        ${!trip.start_date ? (viewer ? "" : `<a class="pill" href="#/trip/${trip.id}/edit">Add dates</a>`) : trip.destination ? `<span class="ov-place">📍 ${esc(trip.destination)}</span>` : ""}
       </section>
+      ${viewer ? `<p class="hint ov-viewing">👀 You're viewing this trip. ${esc(firstNameOf(T.members.find((m) => m.role === "owner")?.user_id))} shares the flights, stays and weather with you here.</p>` : ""}
 
-      <div class="ov-grid">
+      ${viewer ? "" : `<div class="ov-grid">
         <a class="card ov-tile" href="#/trip/${trip.id}/pack">
           ${ring(done(mine), mine.length)}
           <div class="grow"><div class="ov-k">Packing</div>
@@ -1570,46 +1648,59 @@
             <div class="ov-v">${total ? esc(money(total, cur)) + " spent" : "No expenses yet"}</div>
             <div class="ov-s ${myNet > 0 ? "plus" : myNet < 0 ? "minus" : ""}">${!shared ? "Log costs as you go" : myNet > 0 ? `You're owed ${esc(money(myNet, cur))}` : myNet < 0 ? `You owe ${esc(money(-myNet, cur))}` : total ? "You're all square ✓" : "Split costs with the group"}</div></div>
           <span class="ov-go" aria-hidden="true">›</span></a>
-      </div>
+      </div>`}
 
       ${weatherCard(trip)}
 
       <section class="card ov-sec">
-        <div class="ov-head"><h2>🏡 ${shared ? "Where we're staying" : "Where I'm staying"}</h2><button class="pill" id="addStay">+ Add</button></div>
+        <div class="ov-head"><h2>🏡 ${viewer ? "Where they're staying" : shared ? "Where we're staying" : "Where I'm staying"}</h2>${viewer ? "" : `<button class="pill" id="addStay">+ Add</button>`}</div>
         ${ST?.unavailable ? `<p class="hint" style="margin:0">This isn't available yet.</p>`
           : stays.length ? stays.map(stayRow).join("")
+          : viewer ? `<p class="hint" style="margin:0">No stays added yet.</p>`
           : `<p class="hint" style="margin:0 0 10px">Add the hotel, rental or campsite so ${shared ? "everyone has" : "you have"} the address and check-in time in one place.</p>`}
       </section>
 
-      <button class="card ov-import" id="importBtn"><span class="ov-ic" aria-hidden="true">📋</span><span class="grow"><strong>Paste a confirmation</strong><span class="muted">Flight or booking email, or a screenshot. Pack fills in flights and stays.</span></span><span class="ov-go" aria-hidden="true">›</span></button>
+      ${viewer ? "" : `<button class="card ov-import" id="importBtn"><span class="ov-ic" aria-hidden="true">📋</span><span class="grow"><strong>Paste a confirmation</strong><span class="muted">Flight or booking email, or a screenshot. Pack fills in flights and stays.</span></span><span class="ov-go" aria-hidden="true">›</span></button>`}
 
       <section class="card ov-sec">
-        <div class="ov-head"><h2>✈️ Flights</h2><button class="pill" id="addFlight">+ Add flight</button></div>
-        ${shared ? arrivalsLine(flights) : ""}
+        <div class="ov-head"><h2>✈️ Flights</h2>${viewer ? "" : `<button class="pill" id="addFlight">+ Add flight</button>`}</div>
+        ${shared || viewer ? arrivalsLine(flights) : ""}
         ${FL?.unavailable ? `<p class="hint" style="margin:0">Flights aren't available yet.</p>`
           : flights.length ? byDir.map(([d, l]) => `<div class="flt-dir">${DIR[d]}</div>${l.map(flightRow).join("")}`).join("")
+          : viewer ? `<p class="hint" style="margin:0">No flights added yet.</p>`
           : `<p class="hint" style="margin:0">Add flights or paste a confirmation. Pack shows times, length and ${shared ? "who lands when" : "a countdown"}, with links to live status.</p>`}
       </section>
 
+      ${viewer && !cars.length ? "" : `<section class="card ov-sec">
+        <div class="ov-head"><h2>🚗 Rental cars</h2>${viewer ? "" : `<button class="pill" id="addCar">+ Add</button>`}</div>
+        ${CR?.unavailable ? `<p class="hint" style="margin:0">This isn't available yet.</p>`
+          : cars.length ? cars.map(carRow).join("")
+          : `<p class="hint" style="margin:0">Add the pickup and drop-off so they show on the calendar.</p>`}
+      </section>`}
+
       <section class="card ov-sec">
-        <div class="ov-head"><h2>👥 ${shared ? `${T.members.length} people` : "Who's going"}</h2><button class="pill" id="ovShare">${shared ? "Invite" : "Invite people"}</button></div>
+        <div class="ov-head"><h2>👥 ${shared ? `${T.members.length} people` : "Who's going"}</h2>${viewer ? "" : `<button class="pill" id="ovShare">${shared || viewers.length ? "Invite" : "Invite people"}</button>`}</div>
         <div class="ov-people">${T.members.map((m) => { const p = profileOf(m.user_id); const nf = flights.filter((f) => f.user_id === m.user_id).length;
           return `<div class="ov-person">${avatar(p)}<div class="grow"><div class="nm">${esc(m.user_id === me_ ? "You" : p.display_name || p.email || "Someone")}${m.role === "owner" ? ' <span class="badge">Organizer</span>' : ""}</div>
-            <div class="muted">${[nf ? `${nf} flight${nf === 1 ? "" : "s"}` : "", p.venmo ? "Venmo ✓" : ""].filter(Boolean).join(" · ") || (m.user_id === me_ ? "That's you" : "On this trip")}</div></div></div>`; }).join("")}</div>
-        ${shared ? "" : `<p class="hint" style="margin:10px 0 0">Share the trip to pack together, split costs and see each other's flights.</p>`}
+            <div class="muted">${[nf ? `${nf} flight${nf === 1 ? "" : "s"}` : "", !viewer && p.venmo ? "Venmo ✓" : ""].filter(Boolean).join(" · ") || (m.user_id === me_ ? "That's you" : "On this trip")}</div></div></div>`; }).join("")}</div>
+        ${!viewer && viewers.length ? `<div class="ov-viewers"><span class="muted">👀 Following along:</span> ${viewers.map((m) => esc(firstNameOf(m.user_id))).join(", ")}</div>` : ""}
+        ${shared || viewer ? "" : `<p class="hint" style="margin:10px 0 0">Share the trip to pack together, split costs and see each other's flights, or invite family as viewers to follow along.</p>`}
       </section>
 
-      ${trip.details ? `<section class="card ov-sec"><div class="ov-head"><h2>📝 Notes</h2><a class="pill" href="#/trip/${trip.id}/edit">Edit</a></div><p class="ov-notes">${esc(trip.details)}</p></section>` : ""}
+      ${trip.details ? `<section class="card ov-sec"><div class="ov-head"><h2>📝 Notes</h2>${viewer ? "" : `<a class="pill" href="#/trip/${trip.id}/edit">Edit</a>`}</div><p class="ov-notes">${esc(trip.details)}</p></section>` : ""}
     </main>`;
     window.scrollTo(0, scrollY);
-    $$("[data-wx]").forEach((b) => b.addEventListener("click", () => { wxOpen[b.dataset.wx] = !wxOpen[b.dataset.wx]; drawOverview(); }));
-    $("#moreBtn").addEventListener("click", () => tripMenu(T.members.find((m) => m.role === "owner")?.user_id === me_));
+    $$("[data-wx]").forEach((b) => b.addEventListener("click", () => toggleWx(b)));
+    $("#moreBtn").addEventListener("click", () => viewer ? viewerMenu() : tripMenu(T.members.find((m) => m.role === "owner")?.user_id === me_));
+    $$("[data-copy-addr]").forEach((b) => b.addEventListener("click", async () => { try { await navigator.clipboard.writeText(b.dataset.copyAddr); toast("Address copied"); } catch { toast(b.dataset.copyAddr); } }));
+    if (viewer) { $$("[data-edit-flight],[data-edit-stay],[data-edit-car]").forEach((b) => { b.classList.add("ro"); b.tabIndex = -1; }); return; }
+    $("#addCar")?.addEventListener("click", () => CR?.unavailable ? toast("This isn't available yet.") : carSheet(null));
+    $$("[data-edit-car]").forEach((b) => b.addEventListener("click", () => carSheet(cars.find((x) => x.id === b.dataset.editCar))));
     $("#ovShare").addEventListener("click", shareTrip);
     $("#addFlight").addEventListener("click", () => FL?.unavailable ? toast("Flights aren't available yet.") : flightSheet(null));
     $$("[data-edit-flight]").forEach((b) => b.addEventListener("click", () => flightSheet(flights.find((f) => f.id === b.dataset.editFlight))));
     $("#addStay").addEventListener("click", () => ST?.unavailable ? toast("This isn't available yet.") : staySheet(null));
     $$("[data-edit-stay]").forEach((b) => b.addEventListener("click", () => staySheet(stays.find((x) => x.id === b.dataset.editStay))));
-    $$("[data-copy-addr]").forEach((b) => b.addEventListener("click", async () => { try { await navigator.clipboard.writeText(b.dataset.copyAddr); toast("Address copied"); } catch { toast(b.dataset.copyAddr); } }));
     $("#importBtn").addEventListener("click", importSheet);
   }
 
@@ -1644,6 +1735,156 @@
       try { must(await sb.from("trip_stays").delete().eq("id", x.id)); ST.stays = ST.stays.filter((y) => y.id !== x.id); store.set("stays." + trip.id, ST); closeSheet(); drawOverview(); }
       catch (err) { fail(err); }
     });
+  }
+
+  // ───────────── rental cars ─────────────
+  const whenAt = (d, hmv) => [d ? fmtDate(d, { weekday: "short", month: "short", day: "numeric" }) : "", hmv ? clock(hmv) : ""].filter(Boolean).join(", ");
+  function carRow(x) {
+    const t0 = today();
+    const tag = x.pickup_date === t0 ? ["Pickup today", "air"] : x.dropoff_date === t0 ? ["Drop-off today", "warn"] : x.pickup_date && x.dropoff_date && x.pickup_date < t0 && t0 < x.dropoff_date ? ["Have it now", "ok"] : null;
+    return `<div class="stay"><button class="stay-main" data-edit-car="${x.id}">
+      <div class="flt-top"><strong>${esc(x.company)}</strong><span class="grow"></span>${tag ? `<span class="flt-pill ${tag[1]}">${esc(tag[0])}</span>` : ""}</div>
+      <div class="stay-times"><div><span>Pickup</span><b>${esc(whenAt(x.pickup_date, x.pickup_time) || "—")}</b>${x.pickup_place ? `<small class="muted">${esc(x.pickup_place)}</small>` : ""}</div>
+        <div><span>Drop-off</span><b>${esc(whenAt(x.dropoff_date, x.dropoff_time) || "—")}</b>${x.dropoff_place && x.dropoff_place !== x.pickup_place ? `<small class="muted">${esc(x.dropoff_place)}</small>` : ""}</div></div>
+      ${x.note ? `<div class="flt-meta">${esc(x.note)}</div>` : ""}</button>
+      ${x.pickup_place ? `<div class="flt-links"><a href="${mapsUrl(x.company + ", " + x.pickup_place)}" target="_blank" rel="noopener">Directions to pickup ↗</a></div>` : ""}
+    </div>`;
+  }
+  function carSheet(x) {
+    const trip = T.trip;
+    openSheet(`<h2>${x ? "Edit rental car" : "Rental car"}</h2><form id="cf" autocomplete="off">
+      <label class="f" for="cco">Company</label><input class="t" id="cco" value="${esc(x?.company || "")}" placeholder="Hertz, Enterprise, Turo…" required maxlength="80">
+      <label class="f" for="cpp">Pickup location</label><input class="t" id="cpp" value="${esc(x?.pickup_place || "")}" placeholder="LAX, downtown office…" maxlength="200">
+      <div class="row2"><div><label class="f" for="cpd">Pickup</label><input class="t" id="cpd" type="date" value="${esc(x?.pickup_date || trip.start_date || "")}"></div>
+        <div><label class="f" for="cpt">Time</label><input class="t" id="cpt" type="time" value="${esc(x?.pickup_time || "")}"></div></div>
+      <label class="f" for="cdp">Drop-off location <small>(if different)</small></label><input class="t" id="cdp" value="${esc(x && x.dropoff_place !== x.pickup_place ? x.dropoff_place : "")}" placeholder="Same as pickup" maxlength="200">
+      <div class="row2"><div><label class="f" for="cdd">Drop-off</label><input class="t" id="cdd" type="date" value="${esc(x?.dropoff_date || trip.end_date || "")}"></div>
+        <div><label class="f" for="cdt">Time</label><input class="t" id="cdt" type="time" value="${esc(x?.dropoff_time || "")}"></div></div>
+      <label class="f" for="cnote">Note <small>(optional)</small></label><input class="t" id="cnote" value="${esc(x?.note || "")}" placeholder="Shuttle from terminal 2, prepaid fuel" maxlength="300">
+      <p class="hint" id="cerr" role="alert" style="color:var(--err)"></p>
+      <button class="primary" type="submit">${x ? "Save" : "Add"}</button>
+      ${x ? `<button class="danger-btn" type="button" id="cdel">Remove</button>` : ""}</form>`);
+    $("#cf").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const pp = $("#cpp").value.trim();
+      const row = { company: $("#cco").value.trim(), pickup_place: pp, pickup_date: $("#cpd").value || null, pickup_time: $("#cpt").value || "",
+        dropoff_place: $("#cdp").value.trim() || pp, dropoff_date: $("#cdd").value || null, dropoff_time: $("#cdt").value || "", note: $("#cnote").value.trim() };
+      if (row.pickup_date && row.dropoff_date && row.dropoff_date < row.pickup_date) { $("#cerr").textContent = "Drop-off is before pickup."; return; }
+      const b = e.submitter || $("#cf .primary"); busy(b, true, "Saving…");
+      try {
+        if (!CR || CR.tripId !== trip.id) CR = { tripId: trip.id, cars: [] };
+        if (x) { must(await sb.from("trip_cars").update(row).eq("id", x.id)); Object.assign(x, row); }
+        else CR.cars.push(must(await sb.from("trip_cars").insert({ ...row, trip_id: trip.id, created_by: session.user.id }).select("*").single()));
+        CR.cars.sort((a, b2) => String(a.pickup_date || "9").localeCompare(String(b2.pickup_date || "9")));
+        store.set("cars." + trip.id, CR); closeSheet(); redrawTrip(); toast("Saved");
+      } catch (err) { busy(b, false); $("#cerr").textContent = err.message; }
+    });
+    $("#cdel")?.addEventListener("click", async () => {
+      if (!confirm(`Remove the ${x.company} rental?`)) return;
+      try { must(await sb.from("trip_cars").delete().eq("id", x.id)); CR.cars = CR.cars.filter((y) => y.id !== x.id); store.set("cars." + trip.id, CR); closeSheet(); redrawTrip(); }
+      catch (err) { fail(err); }
+    });
+  }
+
+  // ───────────── calendar: the trip laid out by day ─────────────
+  const addDaysISO = (d, n) => new Date(Date.parse(d + "T12:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+  const dowOf = (d) => new Date(d + "T12:00:00Z").getUTCDay();
+  const localDate = (ms, tz) => { try { return new Date(ms).toLocaleDateString("en-CA", { timeZone: tz }); } catch { return ""; } };
+  async function renderCalendar(id) {
+    if (!T || T.trip.id !== id) T = store.get("trip." + id, null);
+    FL = store.get("flights." + id, null); ST = store.get("stays." + id, null); CR = store.get("cars." + id, null);
+    if (T) drawCalendar(); else app.innerHTML = header({ title: "Trip", back: "#/" }) + `<main><p class="hint"><span class="spin"></span><span>Loading…</span></p></main>`;
+    const [fresh, fl, sty, crs] = await Promise.all([fetchTrip(id), fetchFlights(id).catch(() => FL), fetchStays(id).catch(() => ST), fetchCars(id).catch(() => CR)]);
+    if (!fresh) { store.set("trip." + id, null); toast("That trip isn't available."); return go("#/"); }
+    T = fresh; cacheTrip(); if (fl) { FL = fl; store.set("flights." + id, FL); } if (sty) { ST = sty; store.set("stays." + id, ST); } if (crs) { CR = crs; store.set("cars." + id, CR); }
+    if (location.hash !== `#/trip/${id}/calendar`) return;
+    drawCalendar();
+    if (FL?.flights?.length && !AIRPORTS) loadAirports().then(() => { if (location.hash === `#/trip/${id}/calendar`) drawCalendar(); });
+    let h;
+    const again = () => { clearTimeout(h); h = setTimeout(async () => {
+      if (location.hash !== `#/trip/${id}/calendar`) return;
+      const [f, fl2, st2, cr2] = await Promise.all([fetchTrip(id).catch(() => null), fetchFlights(id).catch(() => null), fetchStays(id).catch(() => null), fetchCars(id).catch(() => null)]);
+      if (f) { T = f; cacheTrip(); } if (fl2) { FL = fl2; store.set("flights." + id, FL); } if (st2) { ST = st2; store.set("stays." + id, ST); } if (cr2) { CR = cr2; store.set("cars." + id, CR); }
+      drawCalendar();
+    }, 300); };
+    channel = sb.channel("calendar-" + id)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "trips", filter: `id=eq.${id}` }, again)
+      .on("postgres_changes", { event: "*", schema: "public", table: "trip_flights", filter: `trip_id=eq.${id}` }, again)
+      .on("postgres_changes", { event: "*", schema: "public", table: "trip_stays", filter: `trip_id=eq.${id}` }, again)
+      .on("postgres_changes", { event: "*", schema: "public", table: "trip_cars", filter: `trip_id=eq.${id}` }, again)
+      .subscribe();
+  }
+  // Everything with a date, as { date, time, kind, title, sub }.
+  function calendarEvents() {
+    const id = T.trip.id, ev = [];
+    const flights = FL?.tripId === id ? FL.flights : [], stays = ST?.tripId === id ? ST.stays : [], cars = CR?.tripId === id ? CR.cars : [];
+    for (const f of flights) {
+      const ft = flightTimes(f), dep = (f.dep_airport || f.status?.dep?.iata || "").toUpperCase(), arr = (f.arr_airport || f.status?.arr?.iata || "").toUpperCase();
+      const who = f.user_id && T.members.length > 1 ? firstNameOf(f.user_id) : "";
+      const route = [dep, arr].filter(Boolean).join(" → ");
+      const label = f.direction === "out" ? "Flight out" : f.direction === "back" ? "Flight home" : "Flight";
+      const depT = ft.dep ? at(ft.dep, ft.dA?.tz) : f.dep_time ? clock(f.dep_time) : "";
+      const arrT = ft.arr ? at(ft.arr, ft.aA?.tz) : f.arr_time ? clock(f.arr_time) : "";
+      const arrDate = ft.arr ? localDate(ft.arr, ft.aA?.tz) : f.flight_date;
+      ev.push({ date: f.flight_date, time: f.dep_time || "", kind: "flight", dir: f.direction, title: `${label} · ${f.flight_no}`,
+        sub: [route, depT ? `leaves ${depT}` : "", arrT ? `lands ${arrT}${arrDate && arrDate !== f.flight_date ? " next day" : ""}` : "", who].filter(Boolean).join(" · ") });
+      if (arrDate && arrDate !== f.flight_date) ev.push({ date: arrDate, time: "00:00", kind: "flight", dir: f.direction, title: `Lands · ${f.flight_no}`, sub: [arr, arrT, who].filter(Boolean).join(" · ") });
+    }
+    for (const x of stays) {
+      if (x.check_in_date) ev.push({ date: x.check_in_date, time: x.check_in_time || "15:00", kind: "in", title: `Check in · ${x.name}`, sub: [x.check_in_time ? clock(x.check_in_time) : "", x.address].filter(Boolean).join(" · ") });
+      if (x.check_out_date) ev.push({ date: x.check_out_date, time: x.check_out_time || "11:00", kind: "out", title: `Check out · ${x.name}`, sub: [x.check_out_time ? clock(x.check_out_time) : ""].filter(Boolean).join(" · ") });
+    }
+    for (const c of cars) {
+      if (c.pickup_date) ev.push({ date: c.pickup_date, time: c.pickup_time || "12:00", kind: "car", title: `Pick up car · ${c.company}`, sub: [c.pickup_time ? clock(c.pickup_time) : "", c.pickup_place].filter(Boolean).join(" · ") });
+      if (c.dropoff_date) ev.push({ date: c.dropoff_date, time: c.dropoff_time || "12:00", kind: "car", title: `Drop off car · ${c.company}`, sub: [c.dropoff_time ? clock(c.dropoff_time) : "", c.dropoff_place].filter(Boolean).join(" · ") });
+    }
+    return ev.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  }
+  const CAL_IC = { flight: "✈️", in: "🏨", out: "🧳", car: "🚗" };
+  function drawCalendar() {
+    if (!T) return;
+    const { trip } = T, t0 = today(), ev = calendarEvents();
+    const dates = [trip.start_date, trip.end_date, ...ev.map((e) => e.date)].filter(Boolean).sort();
+    const scrollY = window.scrollY;
+    let body;
+    if (!dates.length) {
+      body = `<section class="card ov-sec"><p class="hint" style="margin:0">${T.myRole === "viewer" ? "No dates on this trip yet." : `Add trip dates, flights, stays or a rental car and they'll show up here. <a href="#/trip/${trip.id}/edit">Add dates</a>`}</p></section>`;
+    } else {
+      const first = dates[0], last = dates[dates.length - 1];
+      const inTrip = (d) => trip.start_date && d >= trip.start_date && d <= (trip.end_date || trip.start_date);
+      const byDay = new Map(); for (const e of ev) (byDay.get(e.date) || byDay.set(e.date, []).get(e.date)).push(e);
+      // Month-style grid, Sunday to Saturday, padded to whole weeks.
+      const gridStart = addDaysISO(first, -dowOf(first)), gridEnd = addDaysISO(last, 6 - dowOf(last));
+      const cells = []; for (let d = gridStart; d <= gridEnd; d = addDaysISO(d, 1)) cells.push(d);
+      const span = (Date.parse(last) - Date.parse(first)) / 864e5;
+      const cellHtml = (d) => {
+        const list = byDay.get(d) || [], outside = d < first || d > last;
+        const ics = [...new Set(list.map((e) => CAL_IC[e.kind]))].join("");
+        const newMonth = d === gridStart || d.slice(8) === "01";
+        return `<${list.length ? `button type="button" data-day="${d}"` : "div"} class="cal-cell${inTrip(d) ? " trip" : ""}${outside ? " out" : ""}${d === t0 ? " today" : ""}${list.length ? " has" : ""}"${list.length ? ` aria-label="${esc(fmtDate(d, { weekday: "long", month: "long", day: "numeric" }))}: ${list.length} plan${list.length === 1 ? "" : "s"}"` : ""}>
+          <span class="cal-n">${newMonth ? `<small>${esc(fmtDate(d, { month: "short" }))}</small> ` : ""}${Number(d.slice(8))}</span><span class="cal-ic" aria-hidden="true">${ics}</span></${list.length ? "button" : "div"}>`;
+      };
+      // Day-by-day list: every day of a short trip, or just the days with plans on a long one.
+      const days = []; for (let d = first; d <= last; d = addDaysISO(d, 1)) if (span <= 21 || byDay.has(d)) days.push(d);
+      const dayNo = (d) => trip.start_date && inTrip(d) ? Math.round((Date.parse(d) - Date.parse(trip.start_date)) / 864e5) + 1 : 0;
+      body = `<section class="card cal">
+          <div class="cal-dow" aria-hidden="true">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((x) => `<span>${x}</span>`).join("")}</div>
+          <div class="cal-grid">${cells.map(cellHtml).join("")}</div>
+          <div class="cal-key"><span><i class="cal-sw"></i>Trip days</span><span>✈️ Flight</span><span>🏨 Check in</span><span>🧳 Check out</span><span>🚗 Rental car</span></div>
+        </section>
+        <section class="card ov-sec cal-agenda">${days.map((d) => { const list = byDay.get(d) || [], n = dayNo(d);
+          return `<div class="cal-day${d === t0 ? " today" : ""}" id="cal-${d}">
+            <div class="cal-date"><span class="cal-wd">${esc(fmtDate(d, { weekday: "short" }))}</span><span class="cal-dn">${Number(d.slice(8))}</span><span class="cal-mo">${esc(fmtDate(d, { month: "short" }))}</span></div>
+            <div class="grow">${n ? `<div class="cal-tripday">Day ${n}${d === t0 ? " · Today" : ""}</div>` : d === t0 ? `<div class="cal-tripday">Today</div>` : ""}
+              ${list.length ? list.map((e) => `<div class="cal-ev ${e.kind}"><span class="cal-evi" aria-hidden="true">${CAL_IC[e.kind]}</span><div><div class="cal-evt">${esc(e.title)}</div>${e.sub ? `<div class="muted">${esc(e.sub)}</div>` : ""}</div></div>`).join("")
+                : `<div class="muted cal-free">Nothing scheduled</div>`}</div></div>`; }).join("")}
+        </section>`;
+    }
+    app.innerHTML = header({ title: trip.name, back: "#/", more: true, sub: [dateRange(trip.start_date, trip.end_date), trip.destination].filter(Boolean).map(esc).join(" · ") }) +
+      `<main class="ov">${tripTabs("calendar")}${body}</main>`;
+    window.scrollTo(0, scrollY);
+    $$(".cal-cell.has").forEach((a) => a.addEventListener("click", () => { const el = document.getElementById("cal-" + a.dataset.day); if (el) { el.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); } }));
+    $("#moreBtn").addEventListener("click", () => T.myRole === "viewer" ? viewerMenu() : tripMenu(T.members.find((m) => m.role === "owner")?.user_id === session.user.id));
   }
 
   // Shrink a photo or screenshot to a JPEG data URL (max 1600px) before sending it to be read.
@@ -1813,10 +2054,12 @@
       T = cached || (await fetchTrip(id));
       if (!T) return go("#/");
     }
+    if (T.myRole === "viewer") return go(`#/trip/${id}`);
     EX = store.get("exp." + id, null);
     if (EX) drawExpenses(); else app.innerHTML = header({ title: T.trip.name, back: "#/" }) + `<main>${tripTabs("expenses")}<p class="hint"><span class="spin"></span><span>Loading…</span></p></main>`;
     const [fresh, ex] = await Promise.all([fetchTrip(id), fetchExpenses(id)]);
     if (fresh) T = fresh;
+    if (T.myRole === "viewer") { cacheTrip(); return go(`#/trip/${id}`); }
     EX = ex; cacheEx(); drawExpenses();
     let h;
     channel = sb.channel("exp-" + id)
@@ -2251,11 +2494,13 @@
       });
     };
     draw(store.get("myStats", null), store.get("isAdmin", false));
-    const [trips, inv, adminRes] = await Promise.all([
-      sb.from("trips").select("id,start_date,end_date,items(name,packed,kind),trip_members(user_id)").then(must),
+    const [allTrips, inv, adminRes] = await Promise.all([
+      sb.from("trips").select("id,start_date,end_date,items(name,packed,kind),trip_members(user_id,role)").then(must),
       sb.from("closet_items").select("purpose").eq("owner_id", session.user.id).then(must),
       sb.rpc("is_admin"),
     ]);
+    // Trips you only view aren't your trips; viewers don't count as travelers on shared ones.
+    const trips = allTrips.filter((t) => (t.trip_members || []).find((m) => m.user_id === session.user.id)?.role !== "viewer");
     const t0 = today(), counts = new Map(), kinds = {};
     let packed = 0, itemsN = 0;
     for (const t of trips) for (const i of t.items || []) {
@@ -2266,7 +2511,7 @@
     const st = {
       trips: trips.length, upcoming: trips.filter((t) => !t.end_date || t.end_date >= t0).length,
       days: trips.reduce((a, t) => a + tripDays(t), 0), packed, avg: trips.length ? Math.round(itemsN / trips.length) : 0,
-      shared: trips.filter((t) => (t.trip_members || []).length > 1).length,
+      shared: trips.filter((t) => (t.trip_members || []).filter((m) => m.role !== "viewer").length > 1).length,
       top: [...counts.values()].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 8),
       personal: inv.filter((i) => i.purpose !== "work").length, equipment: inv.filter((i) => i.purpose === "work").length, kinds,
     };
